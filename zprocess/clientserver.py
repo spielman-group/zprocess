@@ -207,6 +207,8 @@ class ZMQServer(object):
                         raise ValueError(msg)
                     response_data = _typecheck_or_convert_data(response_data,
                                                                self.dtype)
+                    if not self.pull_only:
+                        self.send(response_data)
                 except Exception:
                     # Raise the exception in a separate thread so that the
                     # server keeps running:
@@ -229,8 +231,7 @@ class ZMQServer(object):
                             response_data = str(response_data)
                         response_data = _typecheck_or_convert_data(response_data,
                                                                    self.dtype)
-                if not self.pull_only:
-                    self.send(response_data)
+                        self.send(response_data)
         except Exception:
             self._crashed.set()
             raise
