@@ -773,6 +773,51 @@ class ClientServerTests(unittest.TestCase):
         finally:
             server.shutdown()
 
+    def test_unpicklable_response(self):
+        class MyServer(ZMQServer):
+            def handler(self, data):
+                if data == 'lambda':
+                    return lambda: None
+                return data
+
+        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        try:
+            # Ignore the exception in the other thread:
+            with patch.object(clientserver, 'raise_exception_in_thread'):
+                with self.assertRaisesRegex(Exception, 'function'):
+                    zmq_get(server.port, data='lambda', timeout=1)
+            # Confirm the server still works:
+            self.assertEqual(zmq_get(server.port, data='hello!', timeout=1), 'hello!')
+        finally:
+            server.shutdown()
+
+    def test_overlapping_requests_one_client(self):
+        class MyServer(ZMQServer):
+            def handler(self, data):
+                time.sleep(0.2)
+                return data
+
+        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        client = zprocess.ZMQClient()
+        responses = {}
+
+        def request(name):
+            responses[name] = client.get(server.port, data=name, timeout=2)
+
+        try:
+            # A subscribes, then B subscribes, then A unsubscribes while B waits:
+            threads = []
+            for name in ['A', 'B']:
+                thread = threading.Thread(target=request, args=(name,), daemon=True)
+                thread.start()
+                threads.append(thread)
+                time.sleep(0.05)
+            for thread in threads:
+                thread.join(timeout=3)
+            self.assertEqual(responses, {'A': 'A', 'B': 'B'})
+        finally:
+            server.shutdown()
+
     def test_customauth_backcompat(self):
         class MyCustomAuthServer(ZMQServer):
             def setup_auth(self, context):
