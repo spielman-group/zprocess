@@ -450,6 +450,8 @@ class ZLockServerTests(unittest.TestCase):
             # Timeout not a valid number:
             client.send_multipart([b'acquire', b'key_foo', b'client_foo', b'-inf'])
             client.assertReceived(ERR_TIMEOUT_INVALID)
+            client.send_multipart([b'acquire', b'key_foo', b'client_foo', b'nan'])
+            client.assertReceived(ERR_TIMEOUT_INVALID)
             # Too few args to release:
             client.send_multipart([b'release'])
             client.assertReceived(ERR_WRONG_NUM_ARGS)
