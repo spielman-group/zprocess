@@ -1,4 +1,5 @@
 import os
+import math
 import threading
 from collections import defaultdict
 import enum
@@ -14,8 +15,6 @@ from zprocess.security import SecureContext
 
 MAX_RESPONSE_TIME = 1  # second
 MAX_ABSENT_TIME = 1  # second
-
-INVALID_NUMBERS = {float('nan'), float('inf'), float('-inf')}
 
 ERR_NOT_HELD = b'error: lock not held'
 ERR_INVALID_REENTRY = b'error: lock already held read-only, cannot re-enter as writer'
@@ -320,7 +319,8 @@ class LockRequest(object):
             # A reentry of an already held lock:
             lock = Lock.instance(self.key, self.server)
             try:
-                assert lock.acquire(self.client_id, read_only)
+                acquired = lock.acquire(self.client_id, read_only)
+                assert acquired
                 self.server.send(routing_id, b'ok')
                 msg = '[%s] %s acquired %s'
                 logger.info(msg, ip, _ds(self.client_id), _ds(self.key))
@@ -576,7 +576,7 @@ class ZMQLockServer(object):
         except ValueError:
             self.send(routing_id, ERR_TIMEOUT_INVALID)
             return
-        if timeout in INVALID_NUMBERS:
+        if not math.isfinite(timeout):
             self.send(routing_id, ERR_TIMEOUT_INVALID)
             return
         if len(args) == 4:
