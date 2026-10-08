@@ -53,7 +53,7 @@ class FileHandler(logging.FileHandler):
         if hasattr(self, 'shouldRollover'):
             try:
                 if self.shouldRollover(message):
-                    logging.info("Rolling over %s", self.baseFilename)
+                    logger.info("Rolling over %s", self.baseFilename)
                     self.doRollover()
             except (OSError, IOError):
                 logger.warning(
