@@ -319,7 +319,8 @@ class LockRequest(object):
             # A reentry of an already held lock:
             lock = Lock.instance(self.key, self.server)
             try:
-                assert lock.acquire(self.client_id, read_only)
+                acquired = lock.acquire(self.client_id, read_only)
+                assert acquired
                 self.server.send(routing_id, b'ok')
                 msg = '[%s] %s acquired %s'
                 logger.info(msg, ip, _ds(self.client_id), _ds(self.key))
