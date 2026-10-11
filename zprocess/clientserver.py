@@ -209,7 +209,7 @@ class ZMQServer(object):
                                                                self.dtype)
                     if not self.pull_only:
                         self.send(response_data)
-                except Exception:
+                except BaseException:
                     # Raise the exception in a separate thread so that the
                     # server keeps running:
                     exc_info = sys.exc_info()
@@ -219,10 +219,12 @@ class ZMQServer(object):
                         # Send the error to the client:
                         msg = ("The server had an unhandled exception whilst " + 
                                "processing the request:\n%s" % str(exception_string))
-                        try:
-                            response_data = exc_info[0](msg)
-                        except Exception:
-                            response_data = RuntimeError(msg)
+                        response_data = RuntimeError(msg)
+                        if issubclass(exc_info[0], Exception):
+                            try:
+                                response_data = exc_info[0](msg)
+                            except Exception:
+                                pass
                         if self.dtype == 'raw':
                             response_data = str(response_data).encode('utf8')
                         elif self.dtype == 'multipart':
