@@ -1,9 +1,9 @@
 [build-system]
-requires = ["setuptools", "setuptools_scm"]
+requires = ["setuptools", "setuptools_scm>=10"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
-version_scheme = "release-branch-semver"
+version_scheme = "semver-pep440-release-branch"
 local_scheme = "no-local-version"
 
 [tool.setuptools.packages]
@@ -23,7 +23,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "setuptools_scm",
+    "setuptools_scm>=10",
     "pyzmq",
     "pywin32;           sys_platform == 'win32'",
     "windows-curses;    sys_platform == 'win32'",
