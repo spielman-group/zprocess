@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import os
 import time
+import tempfile
 import threading
 import subprocess
 from unittest.mock import patch
@@ -406,6 +407,29 @@ class TaskTests(unittest.TestCase):
         # test cancel:
         queue.cancel(task2)
         self.assertEqual(queue, [task3])
+
+
+class StartDaemonTests(unittest.TestCase):
+
+    @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
+    def test_start_daemon(self):
+        # Suite apps import tkinter, whose fork handlers must not stop the daemon:
+        pytest.importorskip('tkinter')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, 'daemon.txt')
+            code = (
+                "import os; open(%r, 'w').write(repr((os.getppid(), os.getsid(0)))); "
+                + "os.replace(%r, %r)"
+            ) % (filepath + '.tmp', filepath + '.tmp', filepath)
+            zprocess.start_daemon([sys.executable, '-c', code])
+            deadline = time.monotonic() + 5
+            while not os.path.exists(filepath) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            with open(filepath) as f:
+                ppid, sid = eval(f.read())
+            # Not our child, and in a session of its own:
+            self.assertNotEqual(ppid, os.getpid())
+            self.assertNotEqual(sid, os.getsid(0))
 
 
 class ClientServerTests(unittest.TestCase):
