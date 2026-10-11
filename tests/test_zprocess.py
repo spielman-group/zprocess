@@ -791,6 +791,24 @@ class ClientServerTests(unittest.TestCase):
         finally:
             server.shutdown()
 
+    def test_handler_raises_systemexit(self):
+        class MyServer(ZMQServer):
+            def handler(self, data):
+                if data == 'exit':
+                    raise SystemExit
+                return data
+
+        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        try:
+            # Ignore the exception in the other thread:
+            with patch.object(clientserver, 'raise_exception_in_thread'):
+                with self.assertRaisesRegex(RuntimeError, 'SystemExit'):
+                    zmq_get(server.port, data='exit', timeout=1)
+            # Confirm the server still works:
+            self.assertEqual(zmq_get(server.port, data='hello!', timeout=1), 'hello!')
+        finally:
+            server.shutdown()
+
     def test_overlapping_requests_one_client(self):
         class MyServer(ZMQServer):
             def handler(self, data):
