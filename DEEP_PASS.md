@@ -290,3 +290,62 @@ to date rather than as a second pull request.
   which is every worker in the labs unless they use `zprocess.remote`.
 - Proposal 2 above also means a briefly broken reply no longer kills anything.
 - The dormant branches would then be retired, in step 4.
+
+## Step 2.1: behaviour no one asked for
+
+No candidates. Every change `CodeHealth` makes to `zprocess/` over `master`
+traces to a request.
+
+- **What the fork changed.** `git diff master CodeHealth`, two-dot, at
+  `b7fa8af`: 16 non-merge commits, and in `zprocess/` 80 lines added and 40
+  removed.
+- **Request:**
+  - Ian's `PermissiveHeartBeat` (2f1192d, 5da28e4; upstream PR #26). Its
+    `heartbeat_interval` is used by hyde's kernel runtime.
+  - The ServerHangs, LockLogFixes and `BaseException` fixes, from the master's
+    and labscript-utils' requests on Ian's decisions.
+  - The `start_daemon` launcher and the heartbeat fix, both Ian's.
+  - The version scheme and the Python 3.10 floor, both Ian's.
+- **Users considered:** labscript-utils' `ls_zprocess` and its zlock and zlog
+  start-up, and every suite app's worker processes through `Process`. Also
+  hyde's kernel runtime, and labs' own code using `zprocess` directly.
+- The dormant branches (`PortChanges`, `RobustPackets`, `PortChanges_MD`) are
+  not in `CodeHealth`. They are decided in step 4.
+
+## Step 2.2: duplication
+
+Candidates, for Ian's decision. All are upstream's own code. Merging any of them
+widens the fork's difference from upstream, which costs something at every
+upstream sync; that is weighed against the lines saved.
+
+1. **The zlock and zlog servers' ROUTER skeleton.**
+   - `ZMQLockServer` and `ZMQLogServer` each have `run`,
+     `_win32_keyboardinterrupt`, `_mainloop`'s loop shape, `run_in_thread`,
+     `stop` and `send`. The two `run` bodies differ in 23 of about 50 lines:
+     the server's name, its logger and its handlers.
+   - One base class in `zprocess` would hold them.
+   - About 80 lines saved, across two modules.
+2. **The zlock and zlog clients' socket and ping code.**
+   - `ZLockClient` and `ZLogClient` each have `_new_socket`, `ping` and
+     `get_protocol_version`, with near-identical bodies (24 of 42 lines differ in
+     `_new_socket`).
+   - One base class would hold them.
+   - About 50 lines saved.
+3. **The three command-line entry points.**
+   - `zlock/__main__.py`, `zlog/__main__.py` and `remote/__main__.py` each build
+     the same arguments (port, bind address, shared-secret file,
+     allow-insecure, log directory, daemon) and read the secret.
+   - One shared argument builder.
+   - About 60 lines saved.
+   - labscript-utils' `zlock.py` and `zlog.py` start these as subprocesses, so
+     their command lines must stay as they are.
+4. **`remote/__main__.py` reads the shared-secret file twice** (81-89), with
+   identical code. Cut the second copy: 4 lines. This one has no cost.
+
+Not candidates:
+- `zlock.server.Lock` against `zlock.Lock`: these are a server's state and a
+  client's lock, different jobs that share a name.
+- `setup_logging` and `dedent`: different jobs from labscript-utils' functions
+  of the same names.
+- The compatibility redefinitions in `clientserver.py`, `process_tree.py`,
+  `zlock` and `zlog`, and the legacy `connect` and `ping`, are step 4's.
