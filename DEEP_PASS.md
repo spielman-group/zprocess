@@ -414,3 +414,8 @@ another owner's repository; zprocess changes nothing.
 
 `labscript_utils.ls_zprocess.ZMQServer.handler`'s `BaseException` guard is
 labscript-utils' own entry 8, already settled there.
+
+Outcome (Ian):
+- 1 and 2: runmanager and lyse remove their `Interruptor` guards; the master has
+  briefed them.
+- 3: hyde's heartbeat override stays.
