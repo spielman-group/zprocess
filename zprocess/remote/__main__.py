@@ -82,11 +82,6 @@ def main():
         shared_secret = None
     else:
         shared_secret = open(args.shared_secret_file).read().strip()
-
-    if args.shared_secret_file is None:
-        shared_secret = None
-    else:
-        shared_secret = open(args.shared_secret_file).read().strip()
     allow_insecure = args.allow_insecure
     bind_address ='tcp://' + args.bind_address
 
