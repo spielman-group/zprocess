@@ -381,3 +381,36 @@ Not candidates:
   - `cc8c24c` and `8ebfbda` also apply to upstream `master`.
   - `aa6f0f8` needs the NaN-timeout fix (`8c84996` on `UpstreamBugFixes`) first,
     because its import block is beside that fix's `import math`.
+
+## Step 2.3: root causes
+
+Candidates, for Ian's decision.
+
+**In zprocess: no candidates.** Every change the fork made to `zprocess/` is
+itself the fix at the cause. That is the reply sent inside the request's `try`,
+`XPUB_VERBOSER`, `math.isfinite`, the acquire outside the `assert`, the zlog
+logger, `BaseException`, the `start_daemon` launcher, and `appnope` with late
+replies counting. None of them is a guard over a symptom.
+
+**Elsewhere, guards against zprocess faults that are now fixed.** Each is in
+another owner's repository; zprocess changes nothing.
+
+1. **runmanager `__main__.py:2942`** passes its own `Interruptor()` to
+   `from_child.put()`. Its comment says the put waits for a subscription zmq never
+   reports while the compile's `get()` holds the same one. That is the Interruptor
+   deadlock fixed by `XPUB_VERBOSER` (zprocess `162afe7`, on `Development` and
+   `Production`). The guard could go: 2 lines and its comment. Owner: runmanager.
+2. **lyse `routines.py:638`**: the same guard and the same cause. Owner: lyse.
+3. **hyde's kernel runtime** (`kernel_runtime/__init__.py:515`) sets
+   `heartbeat_interval=10, allowed_missed_heartbeats=10`, which gives about 110 s
+   before a kernel is taken for dead, against zprocess's 10 s.
+   - Its comment says a busy kernel answers slowly. But the child sends the
+     heartbeats and the parent answers them, so a slow answer means a slow parent,
+     hyde's GUI. That is App Nap, which zprocess now prevents, with late replies
+     counting.
+   - The override may no longer be needed, and it slows detecting a dead hyde
+     elevenfold.
+   - Owner: hyde, Ian's call; it needs a trial with hyde idle.
+
+`labscript_utils.ls_zprocess.ZMQServer.handler`'s `BaseException` guard is
+labscript-utils' own entry 8, already settled there.
