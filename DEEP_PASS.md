@@ -342,6 +342,28 @@ upstream sync; that is weighed against the lines saved.
 4. **`remote/__main__.py` reads the shared-secret file twice** (81-89), with
    identical code. Cut the second copy: 4 lines. This one has no cost.
 
+Outcome (Ian approved all four):
+- 1 is done as `aa6f0f8`: `ZMQRouterServer` in `zprocess.clientserver`.
+- 3 is done as `8ebfbda`: `server_argument_parser()` and `server_kwargs()` in
+  `zprocess.utils`.
+  - Arguments are parsed as before.
+  - The help lists the shared arguments first, and two descriptions are
+    reworded.
+- 4 is done as `cc8c24c`.
+- 2 was not built. On a closer reading the clients are not duplicates:
+  - `ZLockClient` repeats a REQ send-and-poll in each method, with a legacy
+    reply for old servers in `get_protocol_version`.
+  - `ZLogClient` uses a DEALER with shared `_send` and `_recv`.
+  - They share only about six lines of `__init__`. Merging them would move zlock's
+    client onto a different socket type, a behaviour change for no real saving.
+- Checks:
+  - The suite: 77 of 77.
+  - Real zlock, zlog and remote servers started from the command line on scratch
+    ports, with a secret file, a log directory and zlog's handler options. They
+    answered and exited cleanly on SIGINT.
+  - One independent review; its fixes are folded in.
+- The librarian confirmed that neither new name duplicates anything.
+
 Not candidates:
 - `zlock.server.Lock` against `zlock.Lock`: these are a server's state and a
   client's lock, different jobs that share a name.
@@ -349,3 +371,13 @@ Not candidates:
   of the same names.
 - The compatibility redefinitions in `clientserver.py`, `process_tree.py`,
   `zlock` and `zlog`, and the legacy `connect` and `ping`, are step 4's.
+
+## Later
+
+- **Ian's upstream "simplify" PR**, to be made once the campaign is done. It uses
+  `cc8c24c`, `8ebfbda` and `aa6f0f8`, in that order.
+  - They touch only upstream's code. They apply cleanly to `UpstreamBugFixes`,
+    where the suite passes with the heartbeat tests set aside.
+  - `cc8c24c` and `8ebfbda` also apply to upstream `master`.
+  - `aa6f0f8` needs the NaN-timeout fix (`8c84996` on `UpstreamBugFixes`) first,
+    because its import block is beside that fix's `import math`.
