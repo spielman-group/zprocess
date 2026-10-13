@@ -1,5 +1,4 @@
 import sys
-import argparse
 
 from zprocess.zlog import DEFAULT_PORT
 from zprocess.zlog.server import (
@@ -8,7 +7,7 @@ from zprocess.zlog.server import (
     RotatingFileHandler,
     TimedRotatingFileHandler,
 )
-from zprocess.utils import disable_quick_edit
+from zprocess.utils import disable_quick_edit, server_argument_parser, server_kwargs
 
 
 # Protocol description:
@@ -85,20 +84,7 @@ from zprocess.utils import disable_quick_edit
 
 
 def main():
-
-    parser = argparse.ArgumentParser(description="zlog server.")
-
-    parser.add_argument('-p', '--port', type=int, default=DEFAULT_PORT,
-                        help='The port to listen on. Default: %d' % DEFAULT_PORT)
-
-    parser.add_argument(
-        '-a',
-        '--bind-address',
-        type=str,
-        default='*',
-        help="""Interface to listen on. Set to '*' (default) for all interfaces, or
-            '127.0.0.1' or '::1' for loopback ipv4 or ipv6 interfaces only""",
-    )
+    parser = server_argument_parser('zlog server', DEFAULT_PORT)
 
     parser.add_argument(
         '-c',
@@ -147,49 +133,8 @@ def main():
            to pass to its constructor. Default: 1.""",
     )
 
-    parser.add_argument(
-        '-s',
-        '--shared-secret-file',
-        type=str,
-        default=None,
-        help="""Filepath to the shared secret used for secure communication.""",
-    )
-
-    parser.add_argument(
-        '-l',
-        '--server-log-dir',
-        type=str,
-        default=None,
-        help="""Directory for the (optional) log file of the zlog server itself.""",
-    )
-
-    exclusive_grp = parser.add_mutually_exclusive_group()
-
-    exclusive_grp.add_argument(
-        '-i',
-        '--allow-insecure',
-        action='store_true',
-        dest='allow_insecure',
-        default=True, # TODO: default to False in zprocess 3.0
-        help="""Must be set to acknowledge that communication will be insecure if not
-        using a shared secret, otherwise connections to hosts other than localhost will
-        raise an exception. Is by default set on zprocess 2 for backward compatibility,
-        but will be unset by default in zprocess 3.""",
-    )
-
-    exclusive_grp.add_argument(
-        '-ni',
-        '--no-allow-insecure',
-        action='store_false',
-        dest='allow_insecure',
-        help="""Set to explicitly disallow insecure connections. This will be
-        unnecessary on zprocess 3.0, when requiring secure connections will be the
-        default behaviour.""",
-    )
-
     args = parser.parse_args()
 
-    port = args.port
     if args.cls == 'FileHandler':
         handler_class = FileHandler
         handler_kwargs = {}
@@ -203,22 +148,11 @@ def main():
             'interval': args.interval,
             'backupCount': args.backupCount,
         }
-    
-    if args.shared_secret_file is None:
-        shared_secret = None
-    else:
-        shared_secret = open(args.shared_secret_file).read().strip()
-    allow_insecure = args.allow_insecure
-    bind_address ='tcp://' + args.bind_address
 
     server = ZMQLogServer(
-        port=port,
-        bind_address=bind_address,
         handler_class=handler_class,
         handler_kwargs=handler_kwargs,
-        shared_secret=shared_secret,
-        allow_insecure=allow_insecure,
-        server_log_dir=args.server_log_dir
+        **server_kwargs(args)
     )
     disable_quick_edit()
     try:

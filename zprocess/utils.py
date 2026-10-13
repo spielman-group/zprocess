@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 import io
 import subprocess
+import argparse
 
 import zmq
 
@@ -250,6 +251,82 @@ def setup_logging(name, silent=False, directory=None):
     elif file_handler_success:
         logger.info('logging to %s', logpath)
     return logger
+
+
+def server_argument_parser(name, default_port):
+    """Return an ArgumentParser for a zprocess server, with the arguments that every
+    server takes. name is the server's name, such as 'zlock server'. Pass the parsed
+    arguments to server_kwargs() to get the arguments of the server's constructor."""
+    parser = argparse.ArgumentParser(description=name + '.')
+
+    parser.add_argument('-p', '--port', type=int, default=default_port,
+                        help='The port to listen on. Default: %d' % default_port)
+
+    parser.add_argument(
+        '-a',
+        '--bind-address',
+        type=str,
+        default='*',
+        help="""Interface to listen on. Set to '*' (default) for all interfaces, or
+            '127.0.0.1' or '::1' for loopback ipv4 or ipv6 interfaces only""",
+    )
+
+    parser.add_argument(
+        '-s',
+        '--shared-secret-file',
+        type=str,
+        default=None,
+        help="""Filepath to the shared secret used for secure communication.""",
+    )
+
+    parser.add_argument(
+        '-l',
+        '--server-log-dir',
+        type=str,
+        default=None,
+        help="""Directory for the (optional) log file of the %s.""" % name,
+    )
+
+    exclusive_grp = parser.add_mutually_exclusive_group()
+
+    exclusive_grp.add_argument(
+        '-i',
+        '--allow-insecure',
+        action='store_true',
+        dest='allow_insecure',
+        default=True, # TODO: default to False in zprocess 3.0
+        help="""Must be set to acknowledge that communication will be insecure if not
+        using a shared secret, otherwise connections to hosts other than localhost will
+        raise an exception. Is by default set on zprocess 2 for backward compatibility,
+        but will be unset by default in zprocess 3.""",
+    )
+
+    exclusive_grp.add_argument(
+        '-ni',
+        '--no-allow-insecure',
+        action='store_false',
+        dest='allow_insecure',
+        help="""Set to explicitly disallow insecure connections. This will be
+        unnecessary on zprocess 3.0, when requiring secure connections will be the
+        default behaviour.""",
+    )
+    return parser
+
+
+def server_kwargs(args):
+    """Return the server constructor's keyword arguments from arguments parsed by a
+    parser from server_argument_parser()."""
+    if args.shared_secret_file is None:
+        shared_secret = None
+    else:
+        shared_secret = open(args.shared_secret_file).read().strip()
+    return dict(
+        port=args.port,
+        bind_address='tcp://' + args.bind_address,
+        shared_secret=shared_secret,
+        allow_insecure=args.allow_insecure,
+        server_log_dir=args.server_log_dir,
+    )
 
 
 def gethostbyname(host, prefer_ipv4=True, require_ipv4=False):
