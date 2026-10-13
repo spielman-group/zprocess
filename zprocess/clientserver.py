@@ -9,15 +9,20 @@ from binascii import hexlify
 from time import monotonic
 
 import zmq
+from zmq.utils.win32 import allow_interrupt
 
 import zprocess
 from zprocess.security import SecureContext
+from zprocess.tasks import TaskQueue
 from zprocess.utils import (
     raise_exception_in_thread,
     Interruptor,
     Interrupted,
     TimeoutError,
+    setup_logging,
 )
+
+ERR_INVALID_COMMAND = b'error: invalid command'
 
 
 def _typecheck_or_convert_data(data, dtype):
@@ -439,6 +444,164 @@ class ZMQClient(object):
         """Clear our internal Interruptor object so that future get*()/push*() calls can
         proceed as normal."""
         self.interruptor.clear()
+
+
+class ZMQRouterServer(object):
+    """A server on a ROUTER socket, such as zlock's or zlog's, that replies to requests
+    and runs the tasks in self.tasks as they come due, all in one thread. A subclass
+    sets name and protocol_version, and extends handle() with its own commands."""
+
+    name = None
+    protocol_version = None
+
+    def __init__(
+        self,
+        port=None,
+        bind_address='tcp://*',
+        silent=False,
+        shared_secret=None,
+        allow_insecure=True,
+        server_log_dir=None
+    ):
+        self.port = port
+        self._initial_port = port
+        self.bind_address = bind_address
+        self.shared_secret = shared_secret
+        self.allow_insecure = allow_insecure
+        self.server_log_dir = server_log_dir
+        self.context = None
+        self.router = None
+        self.stop_sock = None
+        self.shutdown_endpoint = None
+        self.poller = None
+        self.tasks = TaskQueue()
+        self.logger = None
+
+        self.run_thread = None
+        self.started = threading.Event()
+        self.running = False
+        self.silent = silent
+        self._interrupted = False
+
+    def _setup_logging(self):
+        """Return the server's logger. A subclass whose module logs through a module
+        global sets it here."""
+        return setup_logging(self.name, self.silent, self.server_log_dir)
+
+    def run(self):
+        self.context = SecureContext.instance(shared_secret=self.shared_secret)
+        self.router = self.context.socket(
+            zmq.ROUTER, allow_insecure=self.allow_insecure
+        )
+        self.stop_sock = self.context.socket(zmq.PULL)
+        self.poller = zmq.Poller()
+        self.poller.register(self.router, zmq.POLLIN)
+        self.poller.register(self.stop_sock, zmq.POLLIN)
+        if self.port is not None:
+            self.router.bind('%s:%d' % (self.bind_address, self.port))
+        else:
+            self.port = self.router.bind_to_random_port(self.bind_address)
+        self.shutdown_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
+        self.stop_sock.bind(self.shutdown_endpoint)
+
+        self.logger = self._setup_logging()
+        if not self.silent:
+            # Log insecure connection attempts:
+            self.router.logger = self.logger
+        msg = 'This is %s server, running on %s:%d'
+        self.logger.info(msg, self.name, self.bind_address, self.port)
+        self.running = True
+        self.started.set()
+        try:
+            with allow_interrupt(self._win32_keyboardinterrupt):
+                try:
+                    self._mainloop()
+                except KeyboardInterrupt:
+                    # An organic keyboard interrupt on mac or linux:
+                    self.stop()
+                    raise
+            if self._interrupted:
+                # A hacky windows keyboard interrupt. stop() has already been called.
+                raise KeyboardInterrupt
+        finally:
+            self.router.close()
+            self.router = None
+            self.stop_sock.close()
+            self.stop_sock = None
+            self.context = None
+            self.port = self._initial_port
+            self.shutdown_endpoint = None
+            self.running = False
+            self.started.clear()
+            self._interrupted = False
+
+    def _win32_keyboardinterrupt(self):
+        self._interrupted = True
+        self.stop()
+
+    def _mainloop(self):
+        while True:
+            # Wait until we receive a request or a task is due:
+            if self.tasks:
+                timeout = max(0, 1000 * self.tasks.next().due_in())
+            else:
+                timeout = None
+            events = dict(self.poller.poll(timeout))
+            if self.stop_sock in events:
+                assert self.stop_sock.recv() == b'stop'
+                break
+            if events:
+                # A request was received:
+                request = self.router.recv_multipart()
+                if b'' not in request:
+                    #  Malformed.
+                    continue
+                nroutes = request.index(b'')
+                routing_id, msg = request[:nroutes], request[nroutes+1:]
+                if not msg:  # pragma: no cover
+                    # Malformed
+                    continue
+                command, args = msg[0], msg[1:]
+                self.handle(routing_id, self.router.peer_ip, command, args)
+            else:
+                # A task is due:
+                task = self.tasks.pop()
+                task()
+
+    def handle(self, routing_id, ip, command, args):
+        """Reply to a request. A subclass handles its own commands, and passes the
+        others on to this method."""
+        if command == b'hello':
+            self.send(routing_id, b'hello')
+            self.logger.info("[%s] said hello", ip)
+        elif command == b'protocol':
+            self.send(routing_id, self.protocol_version.encode('utf8'))
+            self.logger.info("[%s] requested the protocol version", ip)
+        else:
+            self.send(routing_id, ERR_INVALID_COMMAND)
+            self.logger.info("[%s] sent an invalid command", ip)
+
+    def run_in_thread(self):
+        """Run the main loop in a separate thread, returning immediately"""
+        self.run_thread = threading.Thread(target=self.run)
+        self.run_thread.daemon = True
+        self.run_thread.start()
+        if not self.started.wait(timeout=2):
+            raise RuntimeError('Server failed to start')  # pragma: no cover
+
+    def stop(self):
+        if not self.running:
+            raise RuntimeError('Not running')
+        sock = self.context.socket(zmq.PUSH)
+        sock.connect(self.shutdown_endpoint)
+        sock.send(b'stop')
+        if self.run_thread is not None:
+            self.run_thread.join()
+        sock.close(linger=100)
+
+    def send(self, routing_id, message):
+        self.router.send_multipart(routing_id + [b'', message])
+
 
 # Backwards compatability follows:
 

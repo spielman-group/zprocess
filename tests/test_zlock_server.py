@@ -32,6 +32,7 @@ from zprocess.zlock.server import (
 import zprocess.zlock as zlock
 from zprocess.zlock import ZLockClient
 import zprocess.zlock.server
+import zprocess.clientserver
 
 
 class monkeypatch(object):
@@ -784,10 +785,10 @@ class OtherTests(unittest.TestCase):
         fake_context = FakeContext()
         server = ZMQLockServer(silent=True)
 
-        with monkeypatch(zprocess.zlock.server.SecureContext, 'instance', lambda *args, **kwargs: fake_context):
-            with monkeypatch(zprocess.zlock.server.zmq, 'Poller', FakePoller):
-                with monkeypatch(zprocess.zlock.server, 'allow_interrupt', FakeAllowInterrupt):
-                    with monkeypatch(zprocess.zlock.server, 'setup_logging', lambda *args, **kwargs: FakeLogger()):
+        with monkeypatch(zprocess.clientserver.SecureContext, 'instance', lambda *args, **kwargs: fake_context):
+            with monkeypatch(zprocess.clientserver.zmq, 'Poller', FakePoller):
+                with monkeypatch(zprocess.clientserver, 'allow_interrupt', FakeAllowInterrupt):
+                    with monkeypatch(zprocess.clientserver, 'setup_logging', lambda *args, **kwargs: FakeLogger()):
                         with monkeypatch(ZMQLockServer, '_mainloop', lambda self: None):
                             server.run()
 
