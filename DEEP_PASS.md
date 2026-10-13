@@ -419,3 +419,102 @@ Outcome (Ian):
 - 1 and 2: runmanager and lyse remove their `Interruptor` guards; the master has
   briefed them.
 - 3: hyde's heartbeat override stays.
+
+## Step 2.4: dead code, leftovers and branches
+
+Candidates, for Ian's decision.
+- A search across every repo, tests and hyde included, found who uses each name.
+  It used `git grep -w`; the `\b` form missed hits, so it was rerun.
+- "Upstream's" marks code that is also on `master`: removing it widens the gap
+  with upstream, and labs' own scripts may use it ("Fork goes far from upstream":
+  allowed on Ian's word, with what breaks stated).
+
+### Dead code
+
+1. **`utils.embed`** raises NotImplementedError ("no longer works with newer
+   IPython"). Its only users are its definition and the re-export in
+   `zprocess/__init__.py`. Remove both. Upstream's.
+2. **`run_tests.py`**:
+   - It lists a `tests.py` that does not exist.
+   - `get_coverage_path` is never called.
+   - Neither CI nor anyone else runs the file; `pytest.ini` drives the tests.
+   - Remove the file, and `xmlrunner` from `requirements.txt`, which only it
+     needed. Upstream's.
+3. **`curses_server.LogLines`** ignores `maxlines` and hard-codes
+   `deque(maxlen=100)`; its only caller passes 100. Use `maxlines`, a one-word
+   fix. Upstream's.
+4. **Demo `if __name__ == '__main__'` blocks in library modules:**
+   - Blocks: `tasks.py:99`, `zlock/__init__.py:306`, `zlock/server.py:469`,
+     `zlog/__init__.py:232`, `zlog/server.py:242`, `socks/server.py:475` (a
+     three-hop demo), and a commented-out block at the end of
+     `process_tree.py`.
+   - Each is a hand test of its module, not a command. Remove them; the real
+     entry points are the `__main__.py` files. Upstream's.
+5. **`socks.server.RouteNotAllowed`**: defined, never raised or caught anywhere.
+   Remove. Upstream's.
+
+### Compatibility leftovers
+
+6. **The `zprocess.locking` package**, marked "will be removed in zprocess 3",
+   re-exports `zprocess.zlock`. Two users:
+   - zprocess's own `process_tree.py:36`;
+   - blacs `__main__.py:59`, an unused `import zprocess.locking`.
+   - Move both to `zprocess.zlock`, then remove the package.
+   - blacs's line is blacs's change, to be briefed to its owner. Upstream's.
+7. **zlock's and zlog's module-level legacy API:**
+   - zlock: `connect`, `ping`, `get_protocol_version`, `set_default_timeout`,
+     `set_client_process_name` and `set_client_thread_name`.
+   - zlog: `connect`, `ping`, `get_protocol_version` and `check_access`.
+   - Also the compatibility `Lock` and `ZMQLoggingHandler` that need no client.
+   - No suite repo uses any of them; labscript-utils makes its own clients. The
+     only users are three of upstream's zlock tests.
+   - Removing them breaks lab scripts written against the old API, and those
+     three upstream tests go with them. Ian's call. Upstream's.
+8. **`process_tree.setup_connection_with_parent` and
+   `subprocess_with_queues`**, the "old way". No users anywhere. Remove both,
+   with their `__all__` and `__init__` re-exports. Upstream's.
+9. **`security.SecureSocket.send`** only calls `zmq.Socket.send`. It is a
+   candidate to remove, but it needs a check that pyzmq's own `send_multipart`
+   and the `send_pyobj` family behave the same without it. Upstream's.
+
+**Kept, because they are used:**
+- The compatibility `Event`, `Process` and `_default_process_tree`.
+  labscript-devices calls `zprocess.Event(...)` (PrawnBlaster, PulseBlaster,
+  CiceroOpalKellyXEM3001), and labscript-utils sets `_default_process_tree`.
+- The compatibility `ZMQServer`: labscript-utils' `ls_zprocess.ZMQServer`
+  subclasses it, and the suite's servers, labscript-devices' included, build on
+  that.
+- The module-level `zmq_get*` and `zmq_push*`. Only upstream's tests use them,
+  but they are zprocess's documented public API.
+
+### Branches
+
+10. **`RobustPackets`** (2022, Ian; also on origin): length-prefixed heartbeat
+    messages (`ZEncode`/`ZDecode`), `RETRIES`, retries in `HeartbeatClient`,
+    and clearer failure messages. It was the port-scan fix of the time.
+    - Its content is wholly in `PortChanges`. Two-dot, `PortChanges` differs
+      from it only by 13 PAIR lines in `process_tree.py`.
+    - `PermissiveHeartBeat` and the heartbeat fix supersede it: a wrong reply
+      already counts as a miss, and late replies are read.
+    - It is behind `master`. Merging it would undo upstream's later zlock fixes
+      (`default_timeout`, the thread-name and process-name helpers, the bind
+      address) and `Process.terminate`'s `TimeoutExpired` handling.
+    - **Delete**, locally and on origin.
+11. **`PortChanges`** (2022): `RobustPackets` plus the parent-child queues on
+    PAIR sockets instead of PUSH/PULL. It is behind `master` in the same way.
+    **Rename to `spielman_retired/PortChanges`**, as the record of the 2022
+    port-scan work. Its PAIR change lives on in `PortChanges_MD`.
+12. **`PortChanges_MD`** (origin only, `b14bd5f`): Michael D.'s pull request #1
+    to the fork (April 2026), the same 13 PAIR lines on a current base, plus a
+    whole-file line-ending rewrite of `process_tree.py`.
+    - A PAIR socket accepts one peer, so a scanner cannot join a queue once the
+      child has connected.
+    - The labs' shared secret already rejects scanners through CURVE, before
+      any message.
+    - ZeroMQ documents PAIR as meant for inproc, and it does not reconnect as
+      PUSH/PULL do.
+    - **Rename to `spielman_retired/PortChanges_MD`**, unless Ian or Michael
+      want PAIR. Then it would be redone cleanly, without the line-ending churn,
+      and tested.
+
+`PermissiveHeartBeat` stays as the head of upstream PR #26.
