@@ -132,13 +132,13 @@ def start_daemon(cmd_args):
             subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         )
     else:
-        # Start it from a short-lived Python process, in a new session, so that it is not
-        # our child and has no controlling terminal. Forking here and calling Popen in
-        # the child instead is killed on macOS when a library such as Tcl has
+        # Start it from a short-lived Python process, in a new session, so that it is
+        # not our child and has no controlling terminal. Forking here and calling
+        # Popen in the child instead is killed on macOS when a library such as Tcl has
         # registered fork handlers.
         launcher = (
-            "import subprocess, sys; "
-            + "subprocess.Popen(sys.argv[1:], start_new_session=True)"
+            'import subprocess, sys; '
+            + 'subprocess.Popen(sys.argv[1:], start_new_session=True)'
         )
         cmd_args = [sys.executable, '-c', launcher] + list(cmd_args)
     process = subprocess.Popen(
