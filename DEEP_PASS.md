@@ -589,7 +589,19 @@ Upstream zprocess's style:
 - Names: `snake_case` functions, `CamelCase` classes, `UPPER_CASE` constants, a leading underscore for private helpers; classes often subclass `object`.
 - Docstrings: triple double quotes, text starting on the opening line, wrapped at 88 columns, closing quotes at the end of the last text line; usually a plain sentence or two, often with no final period, no Parameters sections. Many internal functions have none.
 - Comments: `# ` full-sentence comments above the code, wrapped at 88, often ending in a colon when introducing the next statement; no narration.
-- Errors: plain builtin exceptions (`RuntimeError`, `ValueError`, `TypeError`) with the message built in a `msg` variable, then `raise X(msg)`.
-- Imports: stdlib first (unordered, one per line, `from` imports mixed in), a blank line, then `import zmq`, a blank line, then `zprocess` imports; multi-name imports wrapped in parentheses with one name per line and a trailing comma.
+- Errors: plain builtin exceptions (`RuntimeError`, `ValueError`, `TypeError`) with the message inline or built in a `msg` variable first.
+- Imports: stdlib first (unordered, one per line, `from` imports mixed in), a blank line, then `import zmq`, a blank line, then `zprocess` imports; multi-name imports wrapped in parentheses, one name per line with a trailing comma, when they exceed 88 columns.
 - Formatting: 88-column lines, single quotes for short strings (double when the text has an apostrophe or is a message), black-like wrapping of long calls with trailing commas in the hanging form, two blank lines between top-level defs, one between methods.
-- Differs from labscript-style: upstream keeps long multi-sentence docstrings and comments on internal code, and uses `object` bases and `%` formatting; labscript-style wants short docstrings and one-to-three-line comments. Here upstream wins for existing lines; the fork's new text is not lengthened.
+- Differs from labscript-style: upstream keeps long multi-sentence docstrings and comments on internal code, and uses `object` bases and `%` or `.format()` formatting; labscript-style wants short docstrings and one-to-three-line comments. Here upstream wins for existing lines; the fork's new text is not lengthened.
+
+Done:
+- The fork's lines in `utils.py` (27c3319) and `process_tree.py` (9401eec):
+  rewrapped to 88 columns, and the launcher string in single quotes.
+- Every other file's fork lines already matched.
+- Each commit's AST is unchanged, docstrings aside.
+- Checks:
+  - The full suite: 74 of 74, on a second run. The first ended in a native
+    crash dump; see `KNOWN_ISSUES.md`.
+  - The twelve simplify-PR commits still apply in order to `UpstreamBugFixes`.
+- One review: no code defects. Its three corrections to the bullets above are
+  folded in.
