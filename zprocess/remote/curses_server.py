@@ -45,7 +45,7 @@ class LogLines(object):
     """A ring-buffer of log lines to be displayed in the curses interface"""
     def __init__(self, maxlines):
         self.maxlines = maxlines
-        self.lines = collections.deque(maxlen=100)
+        self.lines = collections.deque(maxlen=maxlines)
         self.lines.append('')
 
     def append(self, data):
