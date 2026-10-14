@@ -374,8 +374,12 @@ Not candidates:
 
 ## Later
 
-- **Ian's upstream "simplify" PR**, to be made once the campaign is done. It uses
-  `cc8c24c`, `8ebfbda` and `aa6f0f8`, in that order.
+- **Ian's upstream "simplify" PR**, to be made once the campaign is done.
+  - It uses `cc8c24c`, `8ebfbda` and `aa6f0f8` (step 2.2).
+  - Then `283e9eb`, `473002d`, `ec5f353`, `f520c41`, `a48d658`, `2bbe98b`,
+    `6cb4297`, `463c014` and `df32fce` (step 2.4), in that order.
+  - All twelve apply in order to `UpstreamBugFixes`, and the suite passes there
+    (65, with the heartbeat tests set aside).
   - They touch only upstream's code. They apply cleanly to `UpstreamBugFixes`,
     where the suite passes with the heartbeat tests set aside.
   - `cc8c24c` and `8ebfbda` also apply to upstream `master`.
@@ -518,3 +522,32 @@ Candidates, for Ian's decision.
       and tested.
 
 `PermissiveHeartBeat` stays as the head of upstream PR #26.
+
+Outcome (Ian approved every item; 7 with its three upstream tests). Each is one
+commit:
+
+| # | Commit |
+| --- | --- |
+| 1 `embed` | `283e9eb` |
+| 2 `run_tests.py`, `xmlrunner` | `473002d` |
+| 3 `maxlines` | `ec5f353` |
+| 4 demo blocks, and the imports only they used | `f520c41` |
+| 5 `RouteNotAllowed` | `a48d658` |
+| 6 `zprocess.locking`, after blacs dropped its import (`fb5553c`) | `df32fce` |
+| 7 zlock's and zlog's legacy API, and 3 tests | `6cb4297` |
+| 8 `setup_connection_with_parent`, `subprocess_with_queues` | `2bbe98b` |
+| 9 `SecureSocket.send` | `463c014` |
+
+- Item 9's check: `SecureSocket.send` was the next `send` in the MRO after
+  `zmq.Socket.send`, and a pure pass-through since upstream's `864db16` (2018).
+- Branches:
+  - `RobustPackets` is deleted (tip `213db73`).
+  - `PortChanges` (`0c81ee0`) and `PortChanges_MD` (`b14bd5f`) are renamed to
+    `spielman_retired/`, and the old names are deleted on origin.
+  - `CODEX.md` records them.
+- Checks:
+  - zprocess: 74 of 74.
+  - labscript-utils: 27 of 27.
+  - blacs: 68 of 68.
+  - Real zlock, zlog and remote starts on scratch ports, with clean exits; Ian's
+    servers on 7339 and 7340 were untouched.
