@@ -10,7 +10,6 @@ from zprocess.utils import (
     Interrupted,
     Interruptor,
     start_daemon,
-    embed,
     raise_exception_in_thread,
     disable_quick_edit,
 )
