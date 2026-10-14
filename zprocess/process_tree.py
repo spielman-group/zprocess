@@ -1300,13 +1300,14 @@ class ProcessTree(object):
         If only output_redirection_port is given, output_redirection_host is this
         computer. If neither is given, the child's output goes where this process
         tree's goes, or, for a remote child when this tree's goes nowhere, to this
-        process's own stdout. If remote_process_client is given, the child is started through
-        that zprocess remote server rather than locally. startup_timeout is how long,
-        in seconds, the child has to connect back before RuntimeError is raised.
-        heartbeat_interval and allowed_missed_heartbeats are passed to the child's
-        HeartbeatClient. args are extra command-line arguments for the child, and
-        startup_interruptor, an Interruptor, interrupts waiting for the child to start.
-        Returns the queue to the child, the queue from it, and its Popen object."""
+        process's own stdout. If remote_process_client is given, the child is started
+        through that zprocess remote server rather than locally. startup_timeout is
+        how long, in seconds, the child has to connect back before RuntimeError is
+        raised. heartbeat_interval and allowed_missed_heartbeats are passed to the
+        child's HeartbeatClient. args are extra command-line arguments for the child,
+        and startup_interruptor, an Interruptor, interrupts waiting for the child to
+        start. Returns the queue to the child, the queue from it, and its Popen
+        object."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
