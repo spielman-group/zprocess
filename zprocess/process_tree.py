@@ -659,6 +659,8 @@ class StreamProxy(object):
 
 
 class OutputInterceptor(object):
+    """Redirect stderr and stdout to a zmq PUSH socket"""
+
     # Two OutputInterceptors talking to the same server must share a sock and
     # corresponding lock:
     socks_by_connection = weakref.WeakValueDictionary()
@@ -683,7 +685,6 @@ class OutputInterceptor(object):
 
     atexit.register(_close_socks)
 
-    """Redirect stderr and stdout to a zmq PUSH socket"""
     def __init__(self, host, port, streamname='stdout',
                  shared_secret=None, allow_insecure=False):
         if streamname not in ['stdout', 'stderr']:
@@ -1294,7 +1295,18 @@ class ProcessTree(object):
         interruption, even if this function does not return due to raising the
         Intertupted exception. This can be important as code calling
         Process.interrupt_startup() (such as Process.terminate()) may wish to terminate
-        the child process. TODO finish this and other docstrings."""
+        the child process.
+
+        If only output_redirection_port is given, output_redirection_host is this
+        computer. If neither is given, the child's output goes where this process
+        tree's goes, or, for a remote child when this tree's goes nowhere, to this
+        process's own stdout. If remote_process_client is given, the child is started through
+        that zprocess remote server rather than locally. startup_timeout is how long,
+        in seconds, the child has to connect back before RuntimeError is raised.
+        heartbeat_interval and allowed_missed_heartbeats are passed to the child's
+        HeartbeatClient. args are extra command-line arguments for the child, and
+        startup_interruptor, an Interruptor, interrupts waiting for the child to start.
+        Returns the queue to the child, the queue from it, and its Popen object."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
@@ -1466,9 +1478,8 @@ class ProcessTree(object):
                 'heartbeat_interval',
                 HeartbeatClient.HEARTBEAT_INTERVAL,
             ),
-            # TODO: remove legacy code in the future (introduced 2026)
-            # Older parents will not include this field, so preserve the legacy
-            # single-miss behavior when connecting to them.
+            # Parents older than allowed_missed_heartbeats do not send it. Keep their
+            # single-miss behaviour:
             allowed_missed_heartbeats=parentinfo.get('allowed_missed_heartbeats', 1),
         )
 
