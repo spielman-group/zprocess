@@ -33,7 +33,7 @@ from zprocess.remote import (
     RemoteOutputReceiver,
     DEFAULT_PORT as REMOTE_DEFAULT_PORT,
 )
-from zprocess.locking import ZLockClient, DEFAULT_PORT as ZLOCK_DEFAULT_PORT
+from zprocess.zlock import ZLockClient, DEFAULT_PORT as ZLOCK_DEFAULT_PORT
 from zprocess.zlog import ZLogClient, DEFAULT_PORT as ZLOG_DEFAULT_PORT
 
 PROCESS_CLASS_WRAPPER = 'zprocess.process_class_wrapper'
@@ -1242,7 +1242,7 @@ class ProcessTree(object):
         )
 
     def lock(self, key, read_only=False):
-        """Return a zprocess.locking.Lock for a resource identified by the given key.
+        """Return a zprocess.zlock.Lock for a resource identified by the given key.
         This lock is exclusive among all processes configured to use the same key and
         same zlock server as this ProcessTree."""
         if self.zlock_client is None:
