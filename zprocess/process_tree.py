@@ -1549,30 +1549,5 @@ class Process(_Process):
         _default_process_tree = self.process_tree
         _Process._run(self)
 
-# New way is to call ProcessTree.connect_to_parent(lock) and get back a
-# ProcessTree. This is the old way, returning queues and (optionally) a lock
-# instead:
-def setup_connection_with_parent(lock=False):
-    process_tree = ProcessTree.connect_to_parent()
-    # Set as the default for this process:
-    global _default_process_tree
-    _default_process_tree = process_tree
-    if lock:
-        return (process_tree.to_parent,
-                process_tree.from_parent,
-                process_tree.kill_lock)
-    else:
-        return process_tree.to_parent, process_tree.from_parent
 
-# New way is to instantiate a ProcessTree and call
-# process_tree.subprocess(). Old way is:
-def subprocess_with_queues(path, output_redirection_port=None):
-    if output_redirection_port == 0:  # This used to mean no redirection
-        output_redirection_port = None
-    return _default_process_tree.subprocess(
-        path, output_redirection_port=output_redirection_port
-    )
-
-
-__all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
-           'subprocess_with_queues', 'Event']
+__all__ = ['Process', 'ProcessTree', 'Event']

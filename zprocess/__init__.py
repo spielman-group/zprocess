@@ -31,8 +31,6 @@ from zprocess.process_tree import (
     KillLock,
     Process,
     ProcessTree,
-    setup_connection_with_parent,
-    subprocess_with_queues,
     Event,
     RichStreamHandler,
     rich_print,
