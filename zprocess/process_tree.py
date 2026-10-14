@@ -1576,13 +1576,3 @@ def subprocess_with_queues(path, output_redirection_port=None):
 
 __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
            'subprocess_with_queues', 'Event']
-
-
-# if __name__ == '__main__':
-    # def foo():
-    #     remote_client = RemoteProcessClient('localhost', allow_insecure=True)
-    #     to_child, from_child, child = _default_process_tree.subprocess(
-    #         'test_remote.py', remote_process_client=remote_client)
-    # foo()
-
-    

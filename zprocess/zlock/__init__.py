@@ -301,10 +301,3 @@ def set_client_thread_name(name):
     if _default_zlock_client is None:
         raise RuntimeError("Can't set thread name before instantiating ZLockClient")
     _default_zlock_client.set_thread_name(name)
-
-
-if __name__ == '__main__':
-    # test:
-    connect()
-    with Lock('test', read_only=True):
-        print('with lock')

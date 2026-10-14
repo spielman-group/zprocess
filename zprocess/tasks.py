@@ -94,24 +94,3 @@ class TaskQueue(list):
 
     def cancel(self, task):
         self.remove(task)
-
-
-if __name__ == '__main__':
-    # Intended use. It's up the caller to sleep() or otherwise wait until the next task
-    # is due. It is assumed that the queue is only accessed from a single thread such
-    # that it's not possible for any tasks to be added to the queue during such a sleep.
-    # More usefully, instead of calling sleep(), an application might be calling
-    # select.select() or select.poll() with the time to the next task as the timeout.
-    # This way one can implement a simple mainloop for an event-driven application that
-    # can respond to network and file events as well as executing time-based tasks. This
-    # is how the mainloops of the zlock and zlog servers are implemented.
-    import time
-
-    tasks = TaskQueue()
-    task = Task(1, print, 'hello', 'world')
-
-    tasks.add(task, repeat=True)
-    while tasks:
-        time.sleep(max(0, tasks.next().due_in()))  # don't pass sleep() a negative value
-        next_task = tasks.pop()
-        next_task()

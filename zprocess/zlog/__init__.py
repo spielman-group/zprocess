@@ -2,7 +2,6 @@ import sys
 import os
 import socket
 import threading
-import time
 from logging import Handler
 import uuid
 
@@ -227,17 +226,3 @@ def check_access(filepath, timeout=None):
     if _default_zlog_client is None:
         raise RuntimeError('Not connected to a zlog server')
     return _default_zlog_client.check_access(filepath, timeout)
-
-
-if __name__ == '__main__':
-    import time
-    connect()
-    print(get_protocol_version())
-    import logging
-
-    logger = logging.Logger('test')
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(ZMQLoggingHandler('test.log'))
-    while True:
-        time.sleep(1)
-        logger.info(str(time.time()) + ': this is a log message')
