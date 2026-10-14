@@ -551,3 +551,34 @@ commit:
   - blacs: 68 of 68.
   - Real zlock, zlog and remote starts on scratch ports, with clean exits; Ian's
     servers on 7339 and 7340 were untouched.
+
+## Step 2.5: documents
+
+Done, with no candidate round under the lean rules: `process_tree.py` first
+(4195493), then the rest (e746dcb), and `KNOWN_ISSUES.md` (the commit after).
+
+Every TODO was decided:
+- **`ProcessTree.subprocess`'s "TODO finish this and other docstrings":** done.
+  The docstring now covers every argument and the return value. "Other
+  docstrings" named none, so it was dropped.
+- **The fallback for parents older than `allowed_missed_heartbeats`** ("TODO:
+  remove legacy code in the future"): kept. Parents from before
+  `PermissiveHeartBeat`, remote ones included, still exist. The comment now
+  says why it stays.
+- **`doc/index.rst`'s "TODO: Summary":** done, from the README's own sentence.
+- **`doc/index.rst`'s "TODO: introduction"**, with its placeholder `todo()`
+  example: moved to the docs' new "Possible improvements".
+- **`allow_insecure`'s "default to False in zprocess 3.0"** (upstream's plan):
+  moved to "Possible improvements". The command-line help that says the same
+  stays.
+
+Spent text fixed:
+- the docs' BitBucket link, `setup.py` install and Python 2.7 note, and the
+  README's install line;
+- an orphaned "Disabled for now" comment in `security.py`;
+- `tasks.py`'s module names;
+- `_get_fileno`'s docstring;
+- `OutputInterceptor`'s docstring, misplaced after the class body's code.
+
+The heartbeat entry in `KNOWN_ISSUES.md` now covers only the tests' scripted
+server; real parents opt out of App Nap.
