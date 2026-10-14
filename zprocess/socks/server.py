@@ -47,10 +47,6 @@ class ConnectionEnded(RuntimeError):
     pass
 
 
-class RouteNotAllowed(ValueError):
-    pass
-
-
 class RecvAll(object):
     """Buffer for receiving the exact number of bytes requested from a socket or
     file-like object, and catching errors if the socket times out, closes or if we're
