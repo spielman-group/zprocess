@@ -9,10 +9,12 @@ zprocess |release|
 .. contents::
     :local:
 
-TODO: Summary
+A set of utilities for multiprocessing using zeromq. Includes process creation and
+management, output redirection, message passing, inter-process locks, logging, and a
+process-tree-wide event system.
 
 `View on PyPI <http://pypi.python.org/pypi/zprocess>`_
-| `View on BitBucket <https://bitbucket.org/cbillington/zprocess>`_
+| `View on GitHub <https://github.com/chrisjbillington/zprocess>`_
 | `Read the docs <http://zprocess.readthedocs.org>`_
 
 ------------
@@ -25,40 +27,21 @@ to install ``zprocess``, run:
 
     $ pip3 install zprocess
 
-or to install from source:
+or to install from a clone of the repository:
 
 .. code-block:: bash
 
-    $ python3 setup.py install
+    $ pip3 install .
 
-.. note::
-    Also works with Python 2.7
+zprocess requires Python 3.10 or newer.
 
-------------
-Introduction
-------------
+---------------------
+Possible improvements
+---------------------
 
-TODO: introduction
-
-
--------------
-Example usage
--------------
-
-.. code-block:: python
-    :name: example.py
-
-    def todo():
-        print('example')
-    todo()
-
-.. code-block:: bash
-    :name: output
-
-    $ python3 example.py
-    example
-
-Description of examples
+* An introduction, and worked examples.
+* Require secure connections by default: ``allow_insecure=False`` for the servers
+  and their command lines, as was planned for zprocess 3.
 
 ----------------
 Module reference

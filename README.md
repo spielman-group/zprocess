@@ -10,5 +10,5 @@ and a process-tree-wide event system.
 [view on Github](https://github.com/chrisjbillington/zprocess)
 )
 
-   * Install `python setup.py install`.
+   * Install with `pip install zprocess`, or `pip install .` from a clone.
 

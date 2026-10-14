@@ -3,12 +3,11 @@ from bisect import insort
 import copy
 
 # This module contains a minimalistic task queue. It is used by the zlock and zlog
-# servers (zprocess.locking and zprocess.logging respectively) in order to wait for
-# requests from clients for a limited amount of time so that other due tasks can be
-# performed at set times. This is similar to the kind of functionality provided by
-# async/await, but is simpler and more performant. I may make the jump to asyncio in the
-# future for this functionality, but this serves the needs of these two servers well for
-# the moment.
+# servers in order to wait for requests from clients for a limited amount of time so
+# that other due tasks can be performed at set times. This is similar to the kind of
+# functionality provided by async/await, but is simpler and more performant. I may make
+# the jump to asyncio in the future for this functionality, but this serves the needs of
+# these two servers well for the moment.
 #
 # Usage is to instantiate a TaskQueue, instantiate Task objects, and then call
 # TaskQueue.add() to add them to the queue. One can then inspect how long until the next

@@ -155,7 +155,7 @@ def start_daemon(cmd_args):
 
 
 def _get_fileno(stream):
-    """Return stream.get_fileno(), or -1 if the call raises io.UnsupportedOperation"""
+    """Return stream.fileno(), or -1 if the call raises io.UnsupportedOperation"""
     try:
         return stream.fileno()
     except io.UnsupportedOperation:
@@ -284,7 +284,7 @@ def server_argument_parser(name, default_port):
         '--allow-insecure',
         action='store_true',
         dest='allow_insecure',
-        default=True, # TODO: default to False in zprocess 3.0
+        default=True,
         help="""Must be set to acknowledge that communication will be insecure if not
         using a shared secret, otherwise connections to hosts other than localhost will
         raise an exception. Is by default set on zprocess 2 for backward compatibility,

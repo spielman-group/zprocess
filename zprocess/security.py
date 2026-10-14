@@ -109,9 +109,6 @@ class SecureSocket(zmq.Socket):
         self.logger = None
         self.secure = self.context.secure
 
-        # Disabled for now, have observed problems with BLACS subprocesses when using a
-        # remote process server on localhost with no encryption:
-
         # Enable IPv6 by default:
         self.ipv6 = True
 
