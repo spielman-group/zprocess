@@ -8,6 +8,7 @@ _silent = False
 from zprocess.utils import (
     TimeoutError,
     Interrupted,
+    ProcessExited,
     Interruptor,
     start_daemon,
     raise_exception_in_thread,

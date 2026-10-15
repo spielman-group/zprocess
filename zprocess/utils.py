@@ -21,6 +21,10 @@ class Interrupted(RuntimeError):
     pass
 
 
+class ProcessExited(RuntimeError):
+    pass
+
+
 class Interruptor(object):
     """An object that can be passed to the put() and get() methods of ReadQueue and
     WriteQueue objects, and the get() methods ZMQClient objects, in order to be able to

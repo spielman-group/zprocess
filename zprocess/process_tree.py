@@ -24,6 +24,7 @@ from zprocess.utils import (
     gethostbyname,
     Interruptor,
     Interrupted,
+    ProcessExited,
     TimeoutError,
     get_venv_executable_and_env,
     _get_fileno
@@ -417,10 +418,13 @@ class WriteQueue(object):
 
     """Provides writing of python objects to the underlying zmq socket, with added
     locking and interruptibility of blocking sends. No reading is supported, once you
-    put an object, you can't check what was put or whether the items have been gotten"""
+    put an object, you can't check what was put or whether the items have been gotten.
+    If child, the Popen object of the process at the other end, is given, a put() that
+    cannot send raises ProcessExited once that process has exited."""
 
-    def __init__(self, sock):
+    def __init__(self, sock, child=None):
         self.sock = sock
+        self.child = child
         self.lock = threading.Lock()
         self.poller = zmq.Poller()
         self.poller.register(self.sock)
@@ -438,21 +442,30 @@ class WriteQueue(object):
                 interruption_sock = interruptor.subscribe()
                 self.poller.register(interruption_sock)
                 while True:
+                    # A socket to an exited process never becomes writable, so wake
+                    # to check on it:
+                    poll_timeout = None if self.child is None else 100
                     if timeout is not None:
-                        timeout = max(0, (deadline - monotonic()) * 1000)
-                    events = dict(self.poller.poll(timeout))
-                    if not events:
-                        raise TimeoutError('put() timed out')
+                        remaining = max(0, (deadline - monotonic()) * 1000)
+                        poll_timeout = min(poll_timeout or remaining, remaining)
+                    events = dict(self.poller.poll(poll_timeout))
                     if interruption_sock in events:
                         raise Interrupted(interruption_sock.recv().decode('utf8'))
-                    try:
-                        return self.sock.send_pyobj(
-                            obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
-                        )
-                    except zmq.ZMQError:
-                        # Queue became full or we disconnected or something, keep
-                        # polling:
-                        continue
+                    if events:
+                        try:
+                            return self.sock.send_pyobj(
+                                obj,
+                                protocol=zprocess.PICKLE_PROTOCOL,
+                                flags=zmq.NOBLOCK,
+                            )
+                        except zmq.ZMQError:
+                            # Queue became full or we disconnected or something, keep
+                            # polling:
+                            pass
+                    if self.child is not None and self.child.poll() is not None:
+                        raise ProcessExited('put() to a process that has exited')
+                    if timeout is not None and monotonic() >= deadline:
+                        raise TimeoutError('put() timed out')
             finally:
                 self.poller.unregister(interruption_sock)
                 interruptor.unsubscribe()
@@ -1415,7 +1428,7 @@ class ProcessTree(object):
                 get_interruptor=startup_interruptor,
             )
 
-        to_child = WriteQueue(to_child)
+        to_child = WriteQueue(to_child, child)
         from_child = ReadQueue(from_child)
         if startup_queue is not None:
             startup_queue.put(child)

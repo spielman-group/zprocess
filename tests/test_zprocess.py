@@ -20,7 +20,8 @@ if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
 
 import zprocess
 zprocess._silent = True
-from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,
+from zprocess import (ZMQServer, Process, TimeoutError, ProcessExited,
+                      RichStreamHandler, rich_print,
                       raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw,
                       ExternalBroker)
 import zprocess.clientserver as clientserver
@@ -207,6 +208,22 @@ class ProcessClassTests(unittest.TestCase):
     def tearDown(self):
         self.process.terminate()
         self.redirection_sock.close()
+
+
+class ExitingProcess(Process):
+    def run(self):
+        pass
+
+
+class ExitedProcessTests(unittest.TestCase):
+    def test_put_to_exited_process_raises(self):
+        process = ExitingProcess()
+        to_child, from_child = process.start()
+        process.child.wait(timeout=5)
+        # More puts than the socket buffers, so one must wait:
+        with self.assertRaises(ProcessExited):
+            for _ in range(10000):
+                to_child.put(None, timeout=5)
 
 
 class ProcessTerminateTests(unittest.TestCase):
