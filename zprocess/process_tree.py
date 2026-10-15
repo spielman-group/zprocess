@@ -1428,7 +1428,9 @@ class ProcessTree(object):
                 get_interruptor=startup_interruptor,
             )
 
-        to_child = WriteQueue(to_child, child)
+        # A remote child's exit check is a blocking request, so only a local one is
+        # checked:
+        to_child = WriteQueue(to_child, None if remote_process_client else child)
         from_child = ReadQueue(from_child)
         if startup_queue is not None:
             startup_queue.put(child)
