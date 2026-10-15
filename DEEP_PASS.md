@@ -605,3 +605,22 @@ Done:
   - The twelve simplify-PR commits still apply in order to `UpstreamBugFixes`.
 - One review: no code defects. Its three corrections to the bullets above are
   folded in.
+
+## Codex check of CodeHealth
+
+Two findings; neither is a defect elsewhere in the branch:
+- Windows: heartbeat failure kills a child without running `KillLock`'s
+  handler. Inherited from upstream; left by Ian's decision, in
+  `KNOWN_ISSUES.md`.
+- A put to a remote child checked its exit with a blocking request that
+  ignored the put's deadline and interruptor (7b6f393). Fixed in 7592114: only
+  a local child's exit is checked.
+
+Other checks passed:
+- `b7fa8af` and upstream's `c2e0ff1` (PR #26, merged as `34443e5`) have the
+  same `process_tree.py`.
+- `947d425`'s launcher, `1b2b030`'s zlog port and the late heartbeat replies
+  behave as intended on macOS; Windows and Linux were read, not run.
+- The twelve simplify commits apply in order to `UpstreamBugFixes`; on
+  upstream, `aa6f0f8` needs the NaN-timeout fix `8c84996` first. They are an
+  ordered series, and `2bbe98b`, `6cb4297` and `df32fce` remove legacy API.
