@@ -207,10 +207,16 @@ class HeartbeatClient(object):
     heartbeats in a row have had no correct reply, waiting first for the kill lock to
     be released if it is held, for up to KILL_LOCK_TIMEOUT seconds. The lock is held
     for the duration of a file write, so a hold of that length means that the main
-    thread is stuck."""
+    thread is stuck.
+
+    If on_parent_death is set to a function, heartbeat failure first calls it with no
+    arguments, in a thread of its own, and gives the process PARENT_DEATH_TIMEOUT
+    seconds to exit by itself. The function should only signal the program to quit."""
 
     DEFAULT_ALLOWED_MISSED_HEARTBEATS = 5
     KILL_LOCK_TIMEOUT = 60
+    PARENT_DEATH_TIMEOUT = 10
+    on_parent_death = None
 
     # How long between heartbeats?
     HEARTBEAT_INTERVAL = 1
@@ -269,6 +275,9 @@ class HeartbeatClient(object):
                 else:
                     msg = 'Heartbeat failure'
                 print(msg, file=sys.stderr)
+            if self.on_parent_death is not None:
+                threading.Thread(target=self.on_parent_death, daemon=True).start()
+                time.sleep(self.PARENT_DEATH_TIMEOUT)
             self.lock.exit_when_released(timeout=self.KILL_LOCK_TIMEOUT)
         except zmq.ContextTerminated:
             # Shutting down:

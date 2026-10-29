@@ -367,6 +367,24 @@ class HeartbeatClientTestProcess(Process):
         time.sleep(10)
 
 
+class ParentDeathHookTestProcess(Process):
+    """Sets an on_parent_death hook that tells the parent it ran, then returns or, if
+    the parent asks, hangs"""
+    def run(self):
+        hang = self.from_parent.get()
+        heartbeat_client = self.process_tree.heartbeat_client
+        heartbeat_client.PARENT_DEATH_TIMEOUT = 1
+
+        def on_parent_death():
+            self.to_parent.put('parent died')
+            if hang:
+                threading.Event().wait()
+
+        heartbeat_client.on_parent_death = on_parent_death
+        self.to_parent.put('ready')
+        time.sleep(30)
+
+
 class HeartbeatServerTestProcess(Process):
     """For testing that parent processes are behaving correcly re. heartbeats"""
     def run(self):
@@ -625,6 +643,23 @@ class HeartbeatTests(unittest.TestCase):
         )
         self._assert_alive_after_requests(4, 8)
         self._assert_intervals_are_immediate_retries(1.5)
+
+    def test_parent_death_hook_runs_and_process_still_exits(self):
+        for hang in [False, True]:
+            with self.subTest(hang=hang):
+                self.heartbeat_server = ScriptedHeartbeatServer(shared_secret, [])
+                process_tree = self._process_tree(allowed_missed_heartbeats=1)
+                self.process = ParentDeathHookTestProcess(process_tree=process_tree)
+                to_child, from_child = self.process.start()
+                to_child.put(hang)
+                self.assertEqual(from_child.get(timeout=5), 'ready')
+                # The parent stops replying:
+                self.heartbeat_server.default = 'drop'
+                self.assertEqual(from_child.get(timeout=5), 'parent died')
+                self._assert_process_exits_within(3)
+                self.process = None
+                self.heartbeat_server.close()
+                self.heartbeat_server = None
 
     def test_configured_heartbeat_interval_controls_request_cadence(self):
         self._start_heartbeat_process(
