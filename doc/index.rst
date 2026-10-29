@@ -33,15 +33,13 @@ or to install from a clone of the repository:
 
     $ pip3 install .
 
-zprocess requires Python 3.10 or newer.
+zprocess requires Python 3.11 or newer.
 
 ---------------------
 Possible improvements
 ---------------------
 
 * An introduction, and worked examples.
-* Require secure connections by default: ``allow_insecure=False`` for the servers
-  and their command lines, as was planned for zprocess 3.
 
 ----------------
 Module reference

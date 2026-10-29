@@ -3,67 +3,77 @@
 The code-health campaign's record for zprocess (`issues/code_health_campaign.md`
 in the meta repo): the decisions that still hold, and what is deferred.
 
-## Tests
+## Base
 
-- Upstream's tests stay as upstream wrote them; only the fork's may change.
-- `HeartbeatTests` are the evidence for the heartbeat problem and stay as they
-  are. Breaking the miss counting fails each of them.
-- Deferred: rename `StartDaemonTests.test_start_daemon` to
-  `test_start_daemon_detaches_even_with_tkinter_loaded`.
+`CodeHealth` is upstream zprocess v3.0.1 (`7f188c9`) merged in, plus the fork's
+own changes. Where upstream made a fork change its own way, upstream's is kept:
+the daemon launcher, the Interruptor's `XPUB_VERBOSER`, late heartbeat replies,
+App Nap (`appnope.nope()` once per `ProcessTree`) and the `test_no_access` fix.
+With it come, by Ian's decision:
+- PAIR sockets between parent and child, negotiated with a remote server's
+  protocol version;
+- no default `ProcessTree` at import: `set_default_process_tree()` and
+  `get_default_process_tree()`;
+- Python 3.11 or newer;
+- secure by default: servers and command lines need `allow_insecure` or
+  `--allow-insecure` for insecure connections;
+- `interrupt_main_thread()`, `KillLock.is_held()` and `exit_when_released()`,
+  and a heartbeat failure that waits for the kill lock on every platform;
+- `port_in_use()`, random ports in 49152-65535, and child sockets that do not
+  reconnect to an exited parent's ports.
 
-## Heartbeats
+## Fork changes upstream lacks
 
-- A child is taken for dead after `allowed_missed_heartbeats` heartbeats with no
-  reply, and a late reply still counts, so a slow parent does not kill its
-  children.
-- `HeartbeatServer` calls `appnope.nope()` on macOS, so an idle GUI parent is not
-  throttled by App Nap; `appnope` is a darwin-only dependency.
-- The fallback for parents older than `allowed_missed_heartbeats` stays: such
-  parents, remote ones included, still exist.
-- Proposed, not decided: bind `HeartbeatServer` to `127.0.0.1` unless the tree starts a remote
-  child, so a network scanner cannot reach a local worker's heartbeat port. With
-  the labs' shared secret, CURVE already refuses a scanner.
-- hyde's kernel runtime keeps its `heartbeat_interval=10,
-  allowed_missed_heartbeats=10` override (Ian).
-
-## Shared code
-
+- `ZMQServer` sends its reply inside the request's `try`, so a reply that cannot
+  be pickled reaches the client as an error, and it catches `BaseException`, so a
+  handler's `SystemExit` does too.
+- `WriteQueue.put()` to a local child that has exited raises `ProcessExited`.
+- zlock rejects a NaN timeout, acquires a reentrant lock outside the `assert`,
+  and zlog logs rollovers with its own logger.
 - `ZMQRouterServer` in `zprocess.clientserver` holds the zlock and zlog servers'
-  ROUTER loop; `server_argument_parser()` and `server_kwargs()` in
-  `zprocess.utils` hold the three servers' command-line arguments.
-  labscript-utils starts zlock and zlog as subprocesses, so their command lines
-  stay as they are.
+  ROUTER loop. `server_argument_parser()` and `server_kwargs()` in
+  `zprocess.utils` hold the three servers' command-line arguments, `--silent`
+  included. labscript-utils starts zlock and zlog as subprocesses, so their
+  command lines stay as they are.
 - `ZLockClient` and `ZLogClient` stay separate: one is a REQ client with a legacy
-  reply for old servers, the other a DEALER. Merging them would change zlock's
-  socket type for about six shared lines.
+  reply for old servers, the other a DEALER.
+- Removed: `zprocess.locking`, `utils.embed`, `run_tests.py`,
+  `socks.server.RouteNotAllowed`, `SecureSocket.send`, and the demo
+  `if __name__ == '__main__'` blocks in library modules. `curses_server.LogLines`
+  honours `maxlines`.
 
 ## Public interface kept
 
-These compatibility names stay, because suite code uses them or they are
-documented:
-- `zprocess.Event`, `Process` and `_default_process_tree`: labscript-devices
-  calls `zprocess.Event(...)`, and labscript-utils sets `_default_process_tree`.
+- `zprocess.Event` and `Process` without a `ProcessTree` use the default tree.
+  labscript-utils' `ls_zprocess` sets it by assigning
+  `process_tree._default_process_tree`; it is to call
+  `set_default_process_tree()` instead.
 - The compatibility `ZMQServer`: labscript-utils' `ls_zprocess.ZMQServer`
   subclasses it.
-- The module-level `zmq_get*` and `zmq_push*`, zprocess's documented API.
+- The module-level `zmq_get*` and `zmq_push*`, deprecated upstream with a
+  `FutureWarning`.
 
-zlock's and zlog's module-level legacy API, `zprocess.locking`,
-`setup_connection_with_parent`, `subprocess_with_queues` and `utils.embed` are
-gone; lab scripts written against them must make their own clients.
+## Tests
+
+- Upstream's tests stay as upstream wrote them; the fork adds one each for the
+  unsendable reply, `SystemExit` and `ProcessExited`.
+- `HeartbeatTests` are the evidence for the heartbeat behaviour. Breaking the
+  miss counting fails each of them.
+- hyde's kernel runtime keeps its `heartbeat_interval=10,
+  allowed_missed_heartbeats=10` override (Ian).
 
 ## Branches
 
+- `UpstreamBugFixes` holds the fork's fixes above that upstream lacks, rebased
+  on v3.0.1, for a pull request.
 - `spielman_retired/PortChanges` and `spielman_retired/PortChanges_MD` record the
-  PAIR-socket queue work. If PAIR is wanted, it is redone on a current base,
-  without `PortChanges_MD`'s line-ending rewrite of `process_tree.py`.
+  2022 port-scan work, which upstream's PAIR sockets now cover.
 
 ## Upstream
 
-Ian's "simplify" pull request, once the campaign is done, is this ordered series,
-which applies to `UpstreamBugFixes`: `cc8c24c`, `8ebfbda`, `aa6f0f8`, `283e9eb`,
-`473002d`, `ec5f353`, `f520c41`, `a48d658`, `2bbe98b`, `6cb4297`, `463c014`,
-`df32fce`. On upstream `master`, `aa6f0f8` needs the NaN-timeout fix (`8c84996`)
-first. `2bbe98b`, `6cb4297` and `df32fce` remove legacy API.
+Ian's "simplify" pull request, once the campaign is done, offers the fork's
+`ZMQRouterServer`, `server_argument_parser()` and the removals listed above that
+upstream has not made.
 
 ## Style
 
