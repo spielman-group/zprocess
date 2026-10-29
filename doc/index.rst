@@ -33,7 +33,7 @@ or to install from a clone of the repository:
 
     $ pip3 install .
 
-zprocess requires Python 3.11 or newer.
+zprocess requires Python 3.13 or newer.
 
 ---------------------
 Possible improvements

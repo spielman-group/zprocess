@@ -10,11 +10,11 @@ own changes. Where upstream made a fork change its own way, upstream's is kept:
 the daemon launcher, the Interruptor's `XPUB_VERBOSER`, late heartbeat replies,
 App Nap (`appnope.nope()` once per `ProcessTree`) and the `test_no_access` fix.
 With it come, by Ian's decision:
-- PAIR sockets between parent and child, negotiated with a remote server's
-  protocol version;
+- PAIR sockets between parent and child, as upstream has them, negotiated with a
+  remote server's protocol version;
 - no default `ProcessTree` at import: `set_default_process_tree()` and
   `get_default_process_tree()`;
-- Python 3.11 or newer;
+- Python 3.13 or newer;
 - secure by default: servers and command lines need `allow_insecure` or
   `--allow-insecure` for insecure connections;
 - `interrupt_main_thread()`, `KillLock.is_held()` and `exit_when_released()`,
@@ -67,7 +67,8 @@ With it come, by Ian's decision:
 - `UpstreamBugFixes` holds the fork's fixes above that upstream lacks, rebased
   on v3.0.1, for a pull request.
 - `spielman_retired/PortChanges` and `spielman_retired/PortChanges_MD` record the
-  2022 port-scan work, which upstream's PAIR sockets now cover.
+  2022 port-scan work and its PAIR sockets: deferred until upstream took PAIR
+  sockets; upstream now has them.
 
 ## Upstream
 
