@@ -25,7 +25,8 @@ With it come, by Ian's decision:
 ## Differences from upstream v3.0.1
 
 The fork stays as close to upstream as it can (Ian). Every difference in
-`git diff upstream/master CodeHealth` is one of these:
+`git diff upstream/master CodeHealth` is one of these, and each is offered
+upstream from `UpstreamBugFixes`:
 
 **Fix upstream lacks:**
 - `ZMQServer` sends its reply inside the request's `try`, so a reply that cannot
@@ -39,9 +40,7 @@ The fork stays as close to upstream as it can (Ian). Every difference in
   link, Python 2.7 note and TODO placeholders; `_get_fileno`'s docstring;
   `OutputInterceptor`'s docstring, which sits after code and so is not one;
   `ProcessTree.subprocess`'s unfinished docstring; an orphaned "Disabled for
-  now" comment in `security.py`; `tasks.py`'s module names.
-- The code fixes but `maxlines` are on `UpstreamBugFixes`, for a pull request;
-  `maxlines` and the text go with the "simplify" one.
+  now" comment in `security.py`; `tasks.py`'s name for zlog.
 
 **Fork design upstream lacks (Ian, step 2.2):**
 - `ZMQRouterServer` in `zprocess.clientserver` holds the zlock and zlog servers'
@@ -49,17 +48,13 @@ The fork stays as close to upstream as it can (Ian). Every difference in
 - `server_argument_parser()` and `server_kwargs()` in `zprocess.utils` hold the
   three servers' command-line arguments, with upstream's secure default and
   `--silent`. labscript-utils starts zlock and zlog as subprocesses, so their
-  command lines stay as they are. Taking upstream's form is possible: three
-  copies of the arguments again.
+  command lines stay as they are.
 
-**Removal upstream lacks (Ian, step 2.4):**
-- `zprocess.locking`, which upstream keeps, deprecated, until zprocess 4; nothing
-  in the suite imports it. Taking upstream's form is possible: 22 lines back.
-- `run_tests.py` and `xmlrunner`, `socks.server.RouteNotAllowed`,
-  `SecureSocket.send`, and the demo `if __name__ == '__main__'` blocks in
-  library modules.
+**Ian's decision:** Python 3.13 or newer; the docs say so.
 
-**Ian's decision:** Python 3.13 or newer.
+Upstream's `zprocess.locking` (deprecated until zprocess 4), `run_tests.py`,
+`RouteNotAllowed`, `SecureSocket.send` and demo `if __name__ == '__main__'`
+blocks are kept as upstream has them.
 
 Logging calls pass their arguments lazily, as upstream's do.
 
@@ -88,17 +83,14 @@ reply for old servers, the other a DEALER.
 
 ## Branches
 
-- `UpstreamBugFixes` holds the fork's fixes above that upstream lacks, rebased
-  on v3.0.1, for a pull request.
+- `UpstreamBugFixes`, on upstream v3.0.1, is the pull request for upstream: one
+  commit per change above, Python 3.13 aside. Each applies alone to upstream
+  except two: the `BaseException` fix needs the unsendable-reply fix, and
+  `ZMQRouterServer` needs the NaN-timeout fix, each touching the same lines.
+  Ian pushes it and opens the pull request.
 - `spielman_retired/PortChanges` and `spielman_retired/PortChanges_MD` record the
   2022 port-scan work and its PAIR sockets: deferred until upstream took PAIR
   sockets; upstream now has them.
-
-## Upstream
-
-Ian's "simplify" pull request, once the campaign is done, offers the fork's
-`ZMQRouterServer`, `server_argument_parser()` and the removals listed above that
-upstream has not made.
 
 ## Style
 
