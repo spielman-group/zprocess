@@ -3,9 +3,12 @@ from pathlib import Path
 import sys
 import os
 import time
-import tempfile
+import signal
 import threading
 import subprocess
+import tempfile
+import json
+import warnings
 from unittest.mock import patch
 
 import zmq
@@ -20,15 +23,17 @@ if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
 
 import zprocess
 zprocess._silent = True
-from zprocess import (ZMQServer, Process, TimeoutError, ProcessExited,
-                      RichStreamHandler, rich_print,
-                      raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw,
-                      ExternalBroker)
+from zprocess import (ZMQServer, ZMQClient, Process, TimeoutError, ProcessExited,
+                      RichStreamHandler,
+                      rich_print, raise_exception_in_thread, zmq_get, ExternalBroker,
+                      KillLock, interrupt_main_thread)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
-from zprocess.process_tree import _default_process_tree, EventBroker
-shared_secret = _default_process_tree.shared_secret
-from zprocess.security import SecureContext
+from zprocess.process_tree import EventBroker, ReadQueue, ProcessTree
+default_process_tree = ProcessTree(allow_insecure=True)
+zprocess.set_default_process_tree(default_process_tree)
+shared_secret = default_process_tree.shared_secret
+from zprocess.security import SecureContext, generate_shared_secret
 from zprocess.tasks import Task, TaskQueue
 
 
@@ -210,6 +215,115 @@ class ProcessClassTests(unittest.TestCase):
         self.redirection_sock.close()
 
 
+class InterruptMainThreadTests(unittest.TestCase):
+    """interrupt_main_thread() raises KeyboardInterrupt in the main thread. A blocking
+    call that Python can wake returns at once; one that it cannot wake returns in its
+    own time and the exception is raised then."""
+
+    # Delay from the start of the blocking call to the interrupt:
+    DELAY = 0.2
+    # An interrupt arriving later than this did not wake the blocking call:
+    PROMPT = 2
+
+    def setUp(self):
+        self.prev_handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def tearDown(self):
+        signal.signal(signal.SIGINT, self.prev_handler)
+
+    def _time_to_interrupt(self, blocking_call):
+        """Run blocking_call in this (the main) thread, interrupt it after DELAY
+        seconds from another thread and return the time at which KeyboardInterrupt was
+        raised, measured from the start of the call."""
+        timer = threading.Timer(self.DELAY, interrupt_main_thread)
+        start = time.monotonic()
+        timer.start()
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                blocking_call()
+                # A pending interrupt that did not wake the call is raised here:
+                time.sleep(0.01)
+        finally:
+            timer.cancel()
+        return time.monotonic() - start
+
+    def test_sleep(self):
+        elapsed = self._time_to_interrupt(lambda: time.sleep(10))
+        self.assertLess(elapsed, self.PROMPT)
+
+    def test_lock_acquire(self):
+        lock = threading.Lock()
+        lock.acquire()
+        elapsed = self._time_to_interrupt(lambda: lock.acquire(timeout=4))
+        if os.name == 'nt' and sys.version_info < (3, 14):
+            # The wait is not woken; the exception is raised after the timeout.
+            self.assertGreater(elapsed, self.PROMPT)
+        else:
+            self.assertLess(elapsed, self.PROMPT)
+
+    def test_zmq_poll(self):
+        sock = zmq.Context.instance().socket(zmq.PULL)
+        sock.bind('tcp://127.0.0.1:0')
+        try:
+            elapsed = self._time_to_interrupt(lambda: sock.poll(4000))
+        finally:
+            sock.close(linger=0)
+        if os.name == 'nt':
+            # The poll is not woken; the exception is raised after it returns.
+            self.assertGreater(elapsed, self.PROMPT)
+        else:
+            self.assertLess(elapsed, self.PROMPT)
+
+    def test_python_loop(self):
+        def loop():
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                pass
+
+        elapsed = self._time_to_interrupt(loop)
+        self.assertLess(elapsed, self.PROMPT)
+
+    def test_requires_a_python_sigint_handler(self):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        with self.assertRaises(RuntimeError):
+            interrupt_main_thread()
+
+
+class KillLockTests(unittest.TestCase):
+    def test_is_held(self):
+        lock = KillLock()
+        self.assertFalse(lock.is_held())
+        with lock:
+            self.assertTrue(lock.is_held())
+            with lock:
+                self.assertTrue(lock.is_held())
+            self.assertTrue(lock.is_held())
+        self.assertFalse(lock.is_held())
+
+    def test_exit_when_released_waits_for_release(self):
+        lock = KillLock()
+        exited = threading.Event()
+        with patch('os._exit', lambda status: exited.set()):
+            with lock:
+                thread = threading.Thread(target=lock.exit_when_released)
+                thread.daemon = True
+                thread.start()
+                self.assertFalse(exited.wait(0.5))
+            self.assertTrue(exited.wait(2))
+            thread.join(2)
+
+    def test_exit_when_released_times_out(self):
+        lock = KillLock()
+        exited = threading.Event()
+        with patch('os._exit', lambda status: exited.set()):
+            with lock:
+                thread = threading.Thread(target=lock.exit_when_released, kwargs={'timeout': 0.2})
+                thread.daemon = True
+                thread.start()
+                self.assertTrue(exited.wait(2))
+            thread.join(2)
+
+
 class ExitingProcess(Process):
     def run(self):
         pass
@@ -347,9 +461,11 @@ class ScriptedHeartbeatServer(object):
                     raise
 
     def close(self):
+        # Stop the thread before closing the socket: a zmq socket is not thread-safe,
+        # and closing it while the thread polls it can crash the process.
         self._running = False
-        self.sock.close(linger=0)
         self.thread.join(timeout=1)
+        self.sock.close(linger=0)
 
 
 class HeartbeatTests(unittest.TestCase):
@@ -360,9 +476,9 @@ class HeartbeatTests(unittest.TestCase):
         self, allowed_missed_heartbeats=None, heartbeat_interval=None
     ):
         if allowed_missed_heartbeats is None and heartbeat_interval is None:
-            return _default_process_tree
+            return default_process_tree
 
-        class ConfiguredHeartbeatProcessTree(type(_default_process_tree)):
+        class ConfiguredHeartbeatProcessTree(type(default_process_tree)):
             def subprocess(tree_self, *args, **kwargs):
                 if allowed_missed_heartbeats is not None:
                     kwargs.setdefault(
@@ -376,11 +492,11 @@ class HeartbeatTests(unittest.TestCase):
 
         process_tree = ConfiguredHeartbeatProcessTree(
             shared_secret=shared_secret,
-            allow_insecure=_default_process_tree.allow_insecure,
-            zlock_host=_default_process_tree.zlock_host,
-            zlock_port=_default_process_tree.zlock_port,
-            zlog_host=_default_process_tree.zlog_host,
-            zlog_port=_default_process_tree.zlog_port,
+            allow_insecure=default_process_tree.allow_insecure,
+            zlock_host=default_process_tree.zlock_host,
+            zlock_port=default_process_tree.zlock_port,
+            zlog_host=default_process_tree.zlog_host,
+            zlog_port=default_process_tree.zlog_port,
         )
         process_tree.heartbeat_server = self.heartbeat_server
         return process_tree
@@ -540,10 +656,10 @@ class HeartbeatTests(unittest.TestCase):
 
     def test_parent_correctly_responds_to_heartbeats(self):
         # No mock server this time, we're testing the real one:
-        _default_process_tree.heartbeat_server = None
+        default_process_tree.heartbeat_server = None
         self.process = HeartbeatServerTestProcess()
         to_child, from_child = self.process.start()
-        to_child.put(_default_process_tree.heartbeat_server.port)
+        to_child.put(default_process_tree.heartbeat_server.port)
         self.assertTrue(from_child.sock.poll(1000))
         self.assertTrue(from_child.get())
 
@@ -570,10 +686,18 @@ class TestExternalEventProcess(Process):
 
 
 
+class TestConcurrentEventProcess(Process):
+    def run(self, identifier):
+        event = self.process_tree.event('concurrent', role='post')
+        self.from_parent.get()
+        event.post(identifier)
+        time.sleep(5)
+
+
 class EventTests(unittest.TestCase):
     def test_events(self):
         proc = TestEventProcess()
-        event = _default_process_tree.event('hello', role='wait')
+        event = default_process_tree.event('hello', role='wait')
         proc.start()
         try:
             data = event.wait('1', timeout=1)
@@ -585,13 +709,189 @@ class EventTests(unittest.TestCase):
         broker = EventBroker(bind_address='tcp://127.0.0.1')
         broker_details = ExternalBroker('localhost', broker.in_port, broker.out_port)
         proc = TestExternalEventProcess()
-        event = _default_process_tree.event('hello', role='wait', external_broker=broker_details)
+        event = default_process_tree.event('hello', role='wait', external_broker=broker_details)
         proc.start(broker_details)
         try:
             data = event.wait('1', timeout=1)
             self.assertEqual(data, u'boo')
         finally:
             proc.terminate()
+
+
+    def test_events_from_processes_started_concurrently(self):
+        process_tree = ProcessTree(allow_insecure=True)
+        n_processes = 8
+        processes = [
+            TestConcurrentEventProcess(process_tree) for _ in range(n_processes)
+        ]
+        queues = [None] * n_processes
+        barrier = threading.Barrier(n_processes)
+
+        def start(i):
+            barrier.wait()
+            queues[i] = processes[i].start(i)
+
+        threads = [
+            threading.Thread(target=start, args=(i,)) for i in range(n_processes)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        try:
+            event = process_tree.event('concurrent', role='wait')
+            for i, (to_child, _) in enumerate(queues):
+                to_child.put(None)
+                self.assertEqual(event.wait(i, timeout=5), None)
+        finally:
+            for process in processes:
+                process.terminate()
+
+
+class SecureContextTests(unittest.TestCase):
+
+    def test_instance_from_concurrent_threads(self):
+        shared_secret = generate_shared_secret()
+        n_threads = 8
+        contexts = [None] * n_threads
+        barrier = threading.Barrier(n_threads)
+
+        def get_instance(i):
+            barrier.wait()
+            contexts[i] = SecureContext.instance(shared_secret=shared_secret)
+
+        threads = [
+            threading.Thread(target=get_instance, args=(i,)) for i in range(n_threads)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        for context in contexts:
+            self.assertIs(context, contexts[0])
+
+
+# A child that connects to its parent itself, rather than as a Process:
+CONNECT_TO_PARENT_CODE = """
+import sys
+sys.path.insert(0, %r)
+import zprocess
+process_tree = zprocess.ProcessTree.connect_to_parent()
+event = zprocess.Event('connected', role='post')
+event.post('1', data='posted')
+process_tree.from_parent.get()
+"""
+
+
+class DefaultProcessTreeTests(unittest.TestCase):
+    def test_no_default_process_tree(self):
+        # A fresh interpreter, in which nothing has set a default:
+        result = subprocess.run(
+            [sys.executable, '-c', 'import zprocess; zprocess.Event("hello")'],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No default ProcessTree', result.stderr)
+
+    def test_connect_to_parent_sets_default(self):
+        event = default_process_tree.event('connected', role='wait')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'child.py')
+            with open(path, 'w') as f:
+                f.write(CONNECT_TO_PARENT_CODE % str(PROJECT_ROOT))
+            to_child, from_child, child = default_process_tree.subprocess(path)
+            try:
+                self.assertEqual(event.wait('1', timeout=5), 'posted')
+            finally:
+                child.terminate()
+                child.wait()
+
+
+# A parent that starts a child, writes its ports and the child's pid to a file, and
+# exits without closing its sockets or stopping the child:
+EXITING_PARENT_CODE = """
+import json, os, sys
+sys.path.insert(0, %r)
+import zmq
+import zprocess
+tree = zprocess.ProcessTree(allow_insecure=True)
+to_child, from_child, child = tree.subprocess(%r)
+ports = [
+    int(s.sock.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(':', 1)[1])
+    for s in (to_child, from_child)
+]
+with open(%r, 'w') as f:
+    json.dump({'ports': ports, 'pid': child.pid}, f)
+os._exit(0)
+"""
+
+# A child that connects to its parent and runs until its heartbeat fails:
+SLEEPING_CHILD_CODE = """
+import sys, time
+sys.path.insert(0, %r)
+import zprocess
+process_tree = zprocess.ProcessTree.connect_to_parent()
+while True:
+    time.sleep(1)
+"""
+
+
+class ReusedPortTests(unittest.TestCase):
+    def test_child_of_new_parent_on_ports_of_exited_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child_path = os.path.join(tmp, 'child.py')
+            with open(child_path, 'w') as f:
+                f.write(SLEEPING_CHILD_CODE % str(PROJECT_ROOT))
+            parent_path = os.path.join(tmp, 'parent.py')
+            info_path = os.path.join(tmp, 'info.json')
+            with open(parent_path, 'w') as f:
+                f.write(EXITING_PARENT_CODE % (str(PROJECT_ROOT), child_path, info_path))
+            subprocess.run(
+                [sys.executable, parent_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=True,
+            )
+            with open(info_path) as f:
+                info = json.load(f)
+            old_child_pid = info['pid']
+            ports = list(info['ports'])
+
+            # The old child is still running. A new parent binds the old parent's
+            # ports and starts a child:
+            original = zprocess.security.SecureSocket.bind_to_random_port
+
+            def bind_to_random_port(sock, addr, *args, **kwargs):
+                if ports:
+                    port = ports.pop(0)
+                    sock.bind('%s:%d' % (addr, port))
+                    return port
+                return original(sock, addr, *args, **kwargs)
+
+            tree = ProcessTree(allow_insecure=True)
+            # Wait for the old child's sockets to detect that the connections are
+            # closed before the ports are bound again:
+            time.sleep(0.5)
+            try:
+                with patch.object(
+                    zprocess.security.SecureSocket,
+                    'bind_to_random_port',
+                    bind_to_random_port,
+                ):
+                    to_child, from_child, child = tree.subprocess(child_path)
+                try:
+                    self.assertEqual(ports, [])
+                finally:
+                    child.terminate()
+                    child.wait()
+            finally:
+                try:
+                    os.kill(old_child_pid, signal.SIGTERM)
+                except OSError:
+                    pass
 
 
 class TaskTests(unittest.TestCase):
@@ -624,36 +924,33 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(queue, [task3])
 
 
-class StartDaemonTests(unittest.TestCase):
-
-    @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
-    def test_start_daemon(self):
-        # Suite apps import tkinter, whose fork handlers must not stop the daemon:
-        pytest.importorskip('tkinter')
-        with tempfile.TemporaryDirectory() as tmpdir:
-            filepath = os.path.join(tmpdir, 'daemon.txt')
-            code = (
-                "import os; open(%r, 'w').write(repr((os.getppid(), os.getsid(0)))); "
-                + "os.replace(%r, %r)"
-            ) % (filepath + '.tmp', filepath + '.tmp', filepath)
-            zprocess.start_daemon([sys.executable, '-c', code])
-            deadline = time.monotonic() + 5
-            while not os.path.exists(filepath) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            with open(filepath) as f:
-                ppid, sid = eval(f.read())
-            # Not our child, and in a session of its own:
-            self.assertNotEqual(ppid, os.getpid())
-            self.assertNotEqual(sid, os.getsid(0))
+class ReadQueueTests(unittest.TestCase):
+    def test_put_while_another_thread_gets(self):
+        context = zmq.Context.instance()
+        sock = context.socket(zmq.PAIR)
+        sock.bind('inproc://zprocess-test-readqueue')
+        queue = ReadQueue(sock)
+        received = []
+        getter = threading.Thread(target=lambda: received.append(queue.get(timeout=5)))
+        getter.daemon = True
+        getter.start()
+        # Let the getter block in get():
+        time.sleep(0.2)
+        putter = threading.Thread(target=queue.put, args=('hello',))
+        putter.daemon = True
+        putter.start()
+        putter.join(2)
+        getter.join(2)
+        try:
+            self.assertFalse(putter.is_alive())
+            self.assertEqual(received, ['hello'])
+        finally:
+            sock.close(linger=0)
 
 
 class ClientServerTests(unittest.TestCase):
 
     def test_invalid_dtype_server_raises_valueerror(self):
-        class InvalidServer(clientserver._ZMQServer):
-            def setup_auth(self, context):
-                return None
-
         class FakeSocket(object):
             def setsockopt(self, *args, **kwargs):
                 pass
@@ -672,10 +969,10 @@ class ClientServerTests(unittest.TestCase):
             def register(self, *args, **kwargs):
                 pass
 
-        with patch.object(clientserver.zmq, 'Context', FakeContext):
+        with patch.object(clientserver.SecureContext, 'instance', return_value=FakeContext()):
             with patch.object(clientserver.zmq, 'Poller', FakePoller):
                 with self.assertRaisesRegex(ValueError, "invalid dtype invalid"):
-                    InvalidServer(
+                    clientserver._ZMQServer(
                         port=1, dtype='invalid', bind_address='tcp://127.0.0.1'
                     )
 
@@ -714,17 +1011,20 @@ class ClientServerTests(unittest.TestCase):
                     raise TestError
                 return data
 
-        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        server = MyServer(
+            port=None, bind_address='tcp://127.0.0.1', allow_insecure=True
+        )
+        client = ZMQClient()
         try:
             self.assertIsInstance(server.context, SecureContext)
-            response = zmq_get(server.port, data='hello!')
+            response = client.get(server.port, data='hello!')
             self.assertEqual(response, 'hello!')
 
             # Ignore the exception in the other thread:
             clientserver.raise_exception_in_thread =  lambda *args: None
             try:
                 with self.assertRaises(TestError):
-                    zmq_get(server.port, data='error')
+                    client.get(server.port, data='error')
             finally:
                 clientserver.raise_exception_in_thread = raise_exception_in_thread
         finally:
@@ -737,25 +1037,28 @@ class ClientServerTests(unittest.TestCase):
                     raise TestError
                 return data
 
+        client = ZMQClient()
         for argname in ["dtype", "type", "positional"]:
             if argname == 'dtype':
                 server = MyServer(port=None, dtype='raw',
-                                  bind_address='tcp://127.0.0.1')
+                                  bind_address='tcp://127.0.0.1', allow_insecure=True)
             elif argname == 'type':
-                server = MyServer(port=None, type='raw',
-                                  bind_address='tcp://127.0.0.1')
+                with self.assertWarnsRegex(FutureWarning, 'Use dtype instead'):
+                    server = MyServer(port=None, type='raw',
+                                      bind_address='tcp://127.0.0.1',
+                                      allow_insecure=True)
             elif argname == 'positional':
                 server = MyServer(None, 'raw',
-                                  bind_address='tcp://127.0.0.1')
+                                  bind_address='tcp://127.0.0.1', allow_insecure=True)
             try:
                 self.assertIsInstance(server.context, SecureContext)
-                response = zmq_get_raw(server.port, data=b'hello!')
+                response = client.get_raw(server.port, data=b'hello!')
                 self.assertEqual(response, b'hello!')
 
                 # Ignore the exception in the other thread:
                 clientserver.raise_exception_in_thread =  lambda *args: None
                 try:
-                    self.assertIn(b'TestError', zmq_get_raw(server.port, data=b'error'))
+                    self.assertIn(b'TestError', client.get_raw(server.port, data=b'error'))
                 finally:
                     clientserver.raise_exception_in_thread = \
                         raise_exception_in_thread
@@ -775,13 +1078,14 @@ class ClientServerTests(unittest.TestCase):
                 got_data.set()
 
         server = MyPullServer(port=None, bind_address='tcp://127.0.0.1',
-                              pull_only=True)
+                              pull_only=True, allow_insecure=True)
+        client = ZMQClient()
 
         # So we can catch errors raised by raise_exception_in_thread
 
         try:
             self.assertIsInstance(server.context, SecureContext)
-            response = zmq_push(server.port, data='hello!')
+            response = client.push(server.port, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
@@ -801,13 +1105,13 @@ class ClientServerTests(unittest.TestCase):
             orig_thread = threading.Thread
             try:
                 threading.Thread = MockThread
-                response = zmq_push(server.port, data='error!')
+                response = client.push(server.port, data='error!')
                 self.assertEqual(got_error.wait(timeout=1), True)
             finally:
                 threading.Thread = orig_thread
 
             # Confirm the server still works:
-            response = zmq_push(server.port, data='hello!')
+            response = client.push(server.port, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
@@ -821,14 +1125,17 @@ class ClientServerTests(unittest.TestCase):
                     return lambda: None
                 return data
 
-        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        server = MyServer(
+            port=None, bind_address='tcp://127.0.0.1', allow_insecure=True
+        )
+        client = ZMQClient()
         try:
             # Ignore the exception in the other thread:
             with patch.object(clientserver, 'raise_exception_in_thread'):
                 with self.assertRaisesRegex(Exception, 'function'):
-                    zmq_get(server.port, data='lambda', timeout=1)
+                    client.get(server.port, data='lambda', timeout=1)
             # Confirm the server still works:
-            self.assertEqual(zmq_get(server.port, data='hello!', timeout=1), 'hello!')
+            self.assertEqual(client.get(server.port, data='hello!', timeout=1), 'hello!')
         finally:
             server.shutdown()
 
@@ -839,54 +1146,102 @@ class ClientServerTests(unittest.TestCase):
                     raise SystemExit
                 return data
 
-        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        server = MyServer(
+            port=None, bind_address='tcp://127.0.0.1', allow_insecure=True
+        )
+        client = ZMQClient()
         try:
             # Ignore the exception in the other thread:
             with patch.object(clientserver, 'raise_exception_in_thread'):
                 with self.assertRaisesRegex(RuntimeError, 'SystemExit'):
-                    zmq_get(server.port, data='exit', timeout=1)
+                    client.get(server.port, data='exit', timeout=1)
             # Confirm the server still works:
-            self.assertEqual(zmq_get(server.port, data='hello!', timeout=1), 'hello!')
+            self.assertEqual(client.get(server.port, data='hello!', timeout=1), 'hello!')
         finally:
             server.shutdown()
 
-    def test_overlapping_requests_one_client(self):
+    def test_deprecated_defaults(self):
         class MyServer(ZMQServer):
             def handler(self, data):
-                time.sleep(0.2)
                 return data
 
-        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
-        client = zprocess.ZMQClient()
-        responses = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', FutureWarning)
+            MyServer(
+                port=None, bind_address='tcp://127.0.0.1', allow_insecure=False
+            ).shutdown()
 
-        def request(name):
-            responses[name] = client.get(server.port, data=name, timeout=2)
-
+        with self.assertWarnsRegex(FutureWarning, 'allow_insecure=True'):
+            server = MyServer(port=None, bind_address='tcp://127.0.0.1')
         try:
-            # A subscribes, then B subscribes, then A unsubscribes while B waits:
-            threads = []
-            for name in ['A', 'B']:
-                thread = threading.Thread(target=request, args=(name,), daemon=True)
-                thread.start()
-                threads.append(thread)
-                time.sleep(0.05)
-            for thread in threads:
-                thread.join(timeout=3)
-            self.assertEqual(responses, {'A': 'A', 'B': 'B'})
+            self.assertTrue(server.allow_insecure)
+            with self.assertWarnsRegex(FutureWarning, 'zprocess.zmq_get()'):
+                response = zmq_get(server.port, data='hello!')
+            self.assertEqual(response, 'hello!')
         finally:
             server.shutdown()
 
-    def test_customauth_backcompat(self):
-        class MyCustomAuthServer(ZMQServer):
-            def setup_auth(self, context):
-                pass
+DAEMON_CODE = """
+import os, sys, json, time
+started, finished = sys.argv[1:]
+info = {'pid': os.getpid(), 'cwd': os.getcwd()}
+if hasattr(os, 'getsid'):
+    info['sid'] = os.getsid(0)
+with open(started, 'w') as f:
+    json.dump(info, f)
+time.sleep(10)
+open(finished, 'w').close()
+"""
 
-        server = MyCustomAuthServer(port=None, bind_address='tcp://127.0.0.1')
-        try:
-            self.assertNotIsInstance(server.context, SecureContext)
-        finally:
-            server.shutdown()
+# On macOS, the Tcl/Tk bundled with Python 3.12 and 3.13 makes a forked child of a
+# process that has imported tkinter fail if it forks again, so the launcher imports it.
+LAUNCHER_CODE = """
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import tkinter
+except ImportError:
+    pass
+from zprocess import start_daemon
+start_daemon([sys.executable, '-c', sys.argv[2], sys.argv[3], sys.argv[4]])
+"""
+
+
+class StartDaemonTests(unittest.TestCase):
+    def test_start_daemon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            started = os.path.join(tmp, 'started.json')
+            finished = os.path.join(tmp, 'finished')
+            # The launcher's output is on pipes, so communicate() returning before the
+            # daemon finishes shows that the daemon does not hold them open.
+            launcher = subprocess.Popen(
+                [
+                    sys.executable,
+                    '-c',
+                    LAUNCHER_CODE,
+                    str(PROJECT_ROOT),
+                    DAEMON_CODE,
+                    started,
+                    finished,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = launcher.communicate(timeout=30)
+            self.assertEqual(launcher.returncode, 0, stderr.decode())
+            self.assertFalse(os.path.exists(finished))
+            deadline = time.monotonic() + 60
+            while not os.path.exists(finished) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(os.path.exists(finished), 'daemon did not run to completion')
+            with open(started) as f:
+                info = json.load(f)
+        self.assertEqual(
+            os.path.realpath(info['cwd']), os.path.realpath(tempfile.gettempdir())
+        )
+        if os.name == 'posix':
+            self.assertNotEqual(info['sid'], os.getsid(0))
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

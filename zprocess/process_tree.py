@@ -52,20 +52,37 @@ class KillLock(object):
     you wish to configure your own SIGTERM handler, either ensure it is configured
     before the kill lock singleton is created (keeping in mind that zprocess creates the
     singleton when connecting to parent processes), or call disconnect(), then connect
-    your signal handler, then call connect() again. """
+    your signal handler, then call connect() again.
+
+    The SIGTERM handler runs only when the main thread next executes Python code. On
+    Windows it never runs: Popen.terminate() and os.kill() end the process at once.
+    HeartbeatClient, which ends the process when the parent process stops responding,
+    does not send SIGTERM; it calls exit_when_released(), which waits up to
+    HeartbeatClient.KILL_LOCK_TIMEOUT seconds for the lock to be released and then
+    exits, on every platform and whether or not the main thread is executing Python
+    code."""
 
     _instance = None
+    _instance_lock = threading.Lock()
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = self = object.__new__(cls)
-            self._n_acquires = 0
-            self._prev_handler = None
-            self._sigterm_received = False
-            self._lock = threading.RLock()
-            self.connected = False
-            self.connect()
-        return cls._instance
+        with cls._instance_lock:
+            if cls._instance is None:
+                self = object.__new__(cls)
+                self._n_acquires = 0
+                self._prev_handler = None
+                self._sigterm_received = False
+                self._lock = threading.RLock()
+                # Notified when the lock is released by its last holder:
+                self._released = threading.Condition(self._lock)
+                self.connected = False
+                cls._instance = self
+                try:
+                    self.connect()
+                except BaseException:
+                    cls._instance = None
+                    raise
+            return cls._instance
 
     def connect(self):
         with self._lock:
@@ -139,12 +156,27 @@ class KillLock(object):
             if not self._n_acquires:
                 raise RuntimeError("Not held")
             self._n_acquires -= 1
-            if self._sigterm_received and not self._n_acquires:
-                # If sigterm received while lock held, terminate:
-                os.kill(os.getpid(), signal.SIGTERM)
+            if not self._n_acquires:
+                self._released.notify_all()
+                if self._sigterm_received:
+                    # If sigterm received while lock held, terminate:
+                    os.kill(os.getpid(), signal.SIGTERM)
 
     def __exit__(self, t, v, tb):
         self.release()
+
+    def is_held(self):
+        """Whether any thread holds the lock."""
+        with self._lock:
+            return self._n_acquires > 0
+
+    def exit_when_released(self, status=1, timeout=None):
+        """Block until no thread holds the lock, or for timeout seconds if that is
+        not None, then end the process with os._exit(status). No thread can acquire
+        the lock between the check and the exit. May be called from any thread."""
+        with self._released:
+            self._released.wait_for(lambda: not self._n_acquires, timeout)
+            os._exit(status)
 
 
 class HeartbeatServer(object):
@@ -176,10 +208,14 @@ class HeartbeatServer(object):
 
 
 class HeartbeatClient(object):
-    """A heartbeating thread that terminates the process, unless a lock is held,
-    once allowed_missed_heartbeats heartbeats in a row have had no correct reply."""
+    """A heartbeating thread that ends the process once allowed_missed_heartbeats
+    heartbeats in a row have had no correct reply, waiting first for the kill lock to
+    be released if it is held, for up to KILL_LOCK_TIMEOUT seconds. The lock is held
+    for the duration of a file write, so a hold of that length means that the main
+    thread is stuck."""
 
     DEFAULT_ALLOWED_MISSED_HEARTBEATS = 5
+    KILL_LOCK_TIMEOUT = 60
 
     # How long between heartbeats?
     HEARTBEAT_INTERVAL = 1
@@ -201,6 +237,9 @@ class HeartbeatClient(object):
         # heartbeat is sent:
         self.sock = context.socket(zmq.DEALER, allow_insecure=allow_insecure)
         self.sock.setsockopt(zmq.LINGER, 0)
+        # Do not reconnect, since after the parent exits, another process may bind the
+        # same port:
+        self.sock.setsockopt(zmq.RECONNECT_IVL, -1)
         self.sock.connect('tcp://{}:{}'.format(server_ip, server_port))
         self.heartbeat_interval = heartbeat_interval
         self.allowed_missed_heartbeats = allowed_missed_heartbeats
@@ -227,8 +266,15 @@ class HeartbeatClient(object):
                     if self.sock.recv_multipart()[-1] == pid:
                         self.missed_parent_contacts = 0
             if not zprocess._silent:
-                print('Heartbeat failure', file=sys.stderr)
-            os.kill(os.getpid(), signal.SIGTERM)
+                if self.lock.is_held():
+                    msg = (
+                        'Heartbeat failure: will exit when kill lock released, or '
+                        'after %d seconds.' % self.KILL_LOCK_TIMEOUT
+                    )
+                else:
+                    msg = 'Heartbeat failure'
+                print(msg, file=sys.stderr)
+            self.lock.exit_when_released(timeout=self.KILL_LOCK_TIMEOUT)
         except zmq.ContextTerminated:
             # Shutting down:
             self.sock.close(linger=0)
@@ -427,7 +473,7 @@ class WriteQueue(object):
         self.child = child
         self.lock = threading.Lock()
         self.poller = zmq.Poller()
-        self.poller.register(self.sock)
+        self.poller.register(self.sock, zmq.POLLOUT)
         self.interruptor = Interruptor()
 
     def put(self, obj, timeout=None, interruptor=None):
@@ -440,7 +486,7 @@ class WriteQueue(object):
         with self.lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.poller.register(interruption_sock)
+                self.poller.register(interruption_sock, zmq.POLLIN)
                 while True:
                     # A socket to an exited process never becomes writable, so wake
                     # to check on it:
@@ -495,18 +541,18 @@ class ReadQueue(object):
 
     def __init__(self, sock):
         self.sock = sock
-        self.to_self = sock.context.socket(zmq.PUSH)
-        self.from_self = sock.context.socket(zmq.PULL)
+        self.to_self = sock.context.socket(zmq.PAIR)
+        self.from_self = sock.context.socket(zmq.PAIR)
         self_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
         self.from_self.bind(self_endpoint)
         self.to_self.connect(self_endpoint)
         self.lock = threading.Lock()
         self.to_self_lock = threading.Lock()
         self.in_poller = zmq.Poller()
-        self.in_poller.register(self.sock)
-        self.in_poller.register(self.from_self)
+        self.in_poller.register(self.sock, zmq.POLLIN)
+        self.in_poller.register(self.from_self, zmq.POLLIN)
         self.out_poller = zmq.Poller()
-        self.out_poller.register(self.to_self)
+        self.out_poller.register(self.to_self, zmq.POLLOUT)
         self.interruptor = Interruptor()
 
     def get(self, timeout=None, interruptor=None):
@@ -522,7 +568,7 @@ class ReadQueue(object):
         with self.lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.in_poller.register(interruption_sock)
+                self.in_poller.register(interruption_sock, zmq.POLLIN)
                 events = dict(self.in_poller.poll(timeout))
                 if not events:
                     raise TimeoutError('get() timed out')
@@ -548,7 +594,7 @@ class ReadQueue(object):
         with self.to_self_lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.out_poller.register(interruption_sock)
+                self.out_poller.register(interruption_sock, zmq.POLLIN)
                 while True:
                     if timeout is not None:
                         timeout = max(0, (deadline - monotonic()) * 1000)
@@ -1209,6 +1255,14 @@ class ProcessTree(object):
         self.kill_lock = None
         self.log_paths = {}
         self.startup_timeout = None
+        # Held while creating the broker and heartbeat server:
+        self._lock = threading.Lock()
+
+        if sys.platform == 'darwin':
+            # App Nap delays the heartbeat replies of an idle GUI process, and its
+            # subprocesses would take it for dead:
+            import appnope
+            appnope.nope()
 
         self.zlock_client = None
         if self.zlock_host is not None:
@@ -1233,14 +1287,15 @@ class ProcessTree(object):
         return ProcessTree.__instance
 
     def check_broker(self):
-        if self.broker_in_port is None:
-            # We don't have a parent with a broker: it is our responsibility to
-            # make a broker:
-            self.broker = EventBroker(shared_secret=self.shared_secret,
-                                      allow_insecure=self.allow_insecure)
-            self.broker_host = 'localhost'
-            self.broker_in_port = self.broker.in_port
-            self.broker_out_port = self.broker.out_port
+        with self._lock:
+            if self.broker_in_port is None:
+                # We don't have a parent with a broker: it is our responsibility to
+                # make a broker:
+                self.broker = EventBroker(shared_secret=self.shared_secret,
+                                          allow_insecure=self.allow_insecure)
+                self.broker_host = 'localhost'
+                self.broker_in_port = self.broker.in_port
+                self.broker_out_port = self.broker.out_port
 
     def event(self, event_name, role='wait', external_broker=None):
         return Event(self, event_name, role=role, external_broker=external_broker)
@@ -1322,15 +1377,31 @@ class ProcessTree(object):
         start. Returns the queue to the child, the queue from it, and its Popen
         object."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
+        if remote_process_client is None:
+            pair_sockets = True
+        else:
+            pair_sockets = remote_process_client.children_support_pair_sockets(
+                get_interruptor=startup_interruptor
+            )
+        if pair_sockets:
+            to_child = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+            from_child = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+        else:
+            # TODO: remove legacy code in the future (introduced 2026)
+            # Children started by a remote process server with protocol version 1.0.0
+            # connect with PUSH and PULL sockets.
+            to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
+            from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
 
         from_child_port = from_child.bind_to_random_port('tcp://*')
         to_child_port = to_child.bind_to_random_port('tcp://*')
         self.check_broker()
-        if self.heartbeat_server is None:
-            # First child process, we need a heartbeat server:
-            self.heartbeat_server = HeartbeatServer(shared_secret=self.shared_secret)
+        with self._lock:
+            if self.heartbeat_server is None:
+                # First child process, we need a heartbeat server:
+                self.heartbeat_server = HeartbeatServer(
+                    shared_secret=self.shared_secret
+                )
 
         if self.zlock_client is not None:
             zlock_process_name = self.zlock_client.process_name
@@ -1348,11 +1419,12 @@ class ProcessTree(object):
             elif remote_process_client is not None:
                 # No existing redirection, and process is remote. Redirect its output to
                 # our own stdout using a RemoteOutputReceiver.
-                if self.remote_output_receiver is None:
-                    self.remote_output_receiver = RemoteOutputReceiver(
-                        shared_secret=self.shared_secret,
-                        allow_insecure=self.allow_insecure,
-                    )
+                with self._lock:
+                    if self.remote_output_receiver is None:
+                        self.remote_output_receiver = RemoteOutputReceiver(
+                            shared_secret=self.shared_secret,
+                            allow_insecure=self.allow_insecure,
+                        )
                 output_redirection_host = 'localhost'
                 output_redirection_port = self.remote_output_receiver.port
             else:
@@ -1367,6 +1439,7 @@ class ProcessTree(object):
             'parent_host': 'localhost',
             'to_parent_port': from_child_port,
             'from_parent_port': to_child_port,
+            'pair_sockets': pair_sockets,
             'heartbeat_server_host': 'localhost',
             'heartbeat_server_port': self.heartbeat_server.port,
             'heartbeat_interval': heartbeat_interval,
@@ -1453,9 +1526,19 @@ class ProcessTree(object):
             self.zlock_client.set_process_name(name)
 
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
+        if parentinfo.get('pair_sockets', False):
+            to_parent = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+            from_parent = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+        else:
+            # TODO: remove legacy code in the future (introduced 2026)
+            # Older parents do not send this key and bind PUSH and PULL sockets.
+            to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
+            from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
 
+        # Do not reconnect, since after the parent exits, another process may bind the
+        # same ports, and a PAIR socket accepts only the first peer to connect:
+        to_parent.setsockopt(zmq.RECONNECT_IVL, -1)
+        from_parent.setsockopt(zmq.RECONNECT_IVL, -1)
         from_parent.connect(
             'tcp://%s:%d' % (self.parent_host, parentinfo['from_parent_port'])
         )
@@ -1531,19 +1614,37 @@ class ProcessTree(object):
         process_tree._connect_to_parent(parentinfo)
 
         ProcessTree.__instance = process_tree
+        set_default_process_tree(process_tree)
         return process_tree
 
 
 
 
 
-# Backwards compatability follows:
+# Event and Process use this ProcessTree if they are not given one. In a child process
+# it is the ProcessTree connected to the parent:
+_default_process_tree = None
 
-# A default process tree for all out backward compat functions to work with:
-_default_process_tree = ProcessTree(allow_insecure=True)
+
+def set_default_process_tree(process_tree):
+    """Set the ProcessTree that Event and Process use if they are not given one."""
+    global _default_process_tree
+    _default_process_tree = process_tree
+
+
+def get_default_process_tree():
+    """Return the ProcessTree set with set_default_process_tree(). Raise RuntimeError if
+    none has been set."""
+    if _default_process_tree is None:
+        raise RuntimeError(
+            "No default ProcessTree. Pass a ProcessTree, or call "
+            + "zprocess.set_default_process_tree() first."
+        )
+    return _default_process_tree
+
 
 # Allow instantiating an Event without a ProcessTree as the first argument,
-# insert a default ProcessTree:
+# insert the default ProcessTree:
 _Event = Event
 class Event(_Event):
     def __init__(self, *args, **kwargs):
@@ -1552,11 +1653,11 @@ class Event(_Event):
             kwargs['role'] = kwargs['type']
             del kwargs['type']
         if not args or not isinstance(args[0], ProcessTree):
-            args = (_default_process_tree,) + args
+            args = (get_default_process_tree(),) + args
         _Event.__init__(self, *args, **kwargs)
 
 # Allow instantiating a Process() without a ProcessTree as the first argument,
-# insert a default ProcessTree:
+# insert the default ProcessTree:
 _Process = Process
 class Process(_Process):
     def __init__(self, *args, **kwargs):
@@ -1567,14 +1668,9 @@ class Process(_Process):
         if 'process_tree' not in kwargs and (
             not args or not isinstance(args[0], ProcessTree)
         ):
-            args = (_default_process_tree,) + args
+            args = (get_default_process_tree(),) + args
         _Process.__init__(self, *args, **kwargs)
-        
-    def _run(self):
-        # Set the process tree as the default for this process:
-        global _default_process_tree
-        _default_process_tree = self.process_tree
-        _Process._run(self)
 
 
-__all__ = ['Process', 'ProcessTree', 'Event']
+__all__ = ['Process', 'ProcessTree', 'Event', 'set_default_process_tree',
+           'get_default_process_tree']

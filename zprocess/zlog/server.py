@@ -108,7 +108,7 @@ class ZMQLogServer(ZMQRouterServer):
         handler_class=FileHandler,
         handler_kwargs=None,
         shared_secret=None,
-        allow_insecure=True,
+        allow_insecure=False,
         server_log_dir=None
     ):
         ZMQRouterServer.__init__(

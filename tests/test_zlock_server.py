@@ -715,6 +715,21 @@ class ImplementationUnitTests(unittest.TestCase):
 
         self.assertEqual(client.local.sock.messages[-1][3], b'12.5')
 
+    def test_set_thread_name(self):
+        client = ZLockClient()
+        client.set_thread_name('worker')
+
+        self.assertEqual(client.thread_name.name, 'worker')
+        self.assertIn(b'worker-', client.local.client_id)
+
+    def test_set_process_name_avoids_double_separator(self):
+        client = ZLockClient()
+        client.set_process_name('worker')
+
+        process_identifier = client._make_client_id().split(':')[1]
+        self.assertTrue(process_identifier.startswith('worker-'))
+        self.assertNotIn('worker--', process_identifier)
+
 
 class OtherTests(unittest.TestCase):
     def test_default_bind_address(self):
@@ -775,12 +790,16 @@ class OtherTests(unittest.TestCase):
         # Run the server on a random port on localhost:
         import random
 
-        for _ in range(1):
+        # A random port can be in use, or on Windows in an excluded port range:
+        for _ in range(10):
             port = random.randint(40000, 60000)
             server = ZMQLockServer(
                 bind_address='tcp://127.0.0.1', port=port, silent=True
             )
-            server.run_in_thread()
+            try:
+                server.run_in_thread()
+            except RuntimeError:
+                continue
             break
         else:
             raise RuntimeError("Couldn't bind to a specified port")

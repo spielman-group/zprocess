@@ -1,8 +1,6 @@
 import sys
 from pathlib import Path
 import os
-import stat
-import tempfile
 import uuid
 import shutil
 import zmq
@@ -131,18 +129,17 @@ class ZLogServerTests(unittest.TestCase):
             client.send_multipart([b'check_access', b'\xff'])
             client.assertReceived(ERR_BAD_ENCODING)
 
+    @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
     def test_no_access(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            filepath = os.path.join(tmpdir, 'test.log')
-            open(filepath, 'w').close()
-            os.chmod(filepath, stat.S_IREAD)
-            try:
-                with self.client(None) as client:
-                    client.send_multipart([b'check_access', filepath.encode('utf8')])
-                    self.assertIn(b'[Errno 13] Permission denied', client.recv())
-            finally:
-                # So that the directory can be removed on Windows:
-                os.chmod(filepath, stat.S_IREAD | stat.S_IWRITE)
+        with self.client(None) as client:
+            client.send_multipart([b'check_access', b'/test.log'])
+            reply = client.recv()
+            # The root directory is read-only on macOS and not writable on Linux:
+            self.assertTrue(
+                b'[Errno 13] Permission denied' in reply
+                or b'[Errno 30] Read-only file system' in reply,
+                reply,
+            )
 
     @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
     def test_cant_create_files(self):

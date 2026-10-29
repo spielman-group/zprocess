@@ -1,8 +1,11 @@
 import sys
+import errno
+import random
 import base64
 import weakref
 import threading
 import ipaddress
+import functools
 from time import monotonic
 
 import zmq
@@ -28,6 +31,10 @@ class InsecureConnection(RuntimeError):
     pass
 
 
+class CurveNotSupported(RuntimeError):
+    pass
+
+
 class AuthenticationFailure(RuntimeError):
     pass
 
@@ -50,6 +57,26 @@ network even if messages contain no sensitive information.""".splitlines()
 )
 
 
+CURVE_NOT_SUPPORTED_ERROR = ' '.join(
+    """The installed libzmq was built without CURVE support, which zprocess requires
+for encrypted and authenticated communication with a shared secret. This is the case
+for the pyzmq package on the Anaconda default channel for Windows. The pyzmq packages
+on conda-forge and on PyPI support CURVE.""".splitlines()
+)
+
+_curve_supported = None
+
+
+def _check_curve_support():
+    """Raise CurveNotSupported if libzmq was built without CURVE. The result of
+    zmq.has('curve') is cached after the first call."""
+    global _curve_supported
+    if _curve_supported is None:
+        _curve_supported = zmq.has('curve')
+    if not _curve_supported:
+        raise CurveNotSupported(CURVE_NOT_SUPPORTED_ERROR)
+
+
 def ip_is_loopback(ip):
     """Return whether an IP address is on the loopback interface"""
     ip = ipaddress.ip_address(ip)
@@ -58,11 +85,23 @@ def ip_is_loopback(ip):
     return ip.is_loopback
 
 
+@functools.lru_cache(maxsize=1024)
+def _parse_peer_address(peer_address):
+    """Return the IP address in a message's Peer-Address property as a string, with an
+    IPv4-mapped IPv6 address converted to IPv4, and whether it is on the loopback
+    interface"""
+    peer_ip = ipaddress.ip_address(peer_address)
+    if peer_ip.version == 6 and peer_ip.ipv4_mapped is not None:
+        peer_ip = peer_ip.ipv4_mapped
+    return str(peer_ip), peer_ip.is_loopback
+
+
 def generate_shared_secret():
     """Compute a new pair of random CurveZMQ secret keys, decode them from z85
     encoding, and return the result as a base64 encoded unicode string as suitable
     for passing to SecureContext() or storing on disk. We use base64 because it is
     more compatible with Python config files than z85."""
+    _check_curve_support()
     _, client_secret = zmq.curve_keypair()
     _, server_secret = zmq.curve_keypair()
     return base64.b64encode(zmq.utils.z85.decode(client_secret) + 
@@ -132,6 +171,7 @@ class SecureSocket(zmq.Socket):
     def _configure_curve(self, server):
         """Set the curve configuration of the socket depending on whether we
         are a server or not"""
+        _check_curve_support()
         orig_server = self.curve_server
         if server:
             self.curve_server = True
@@ -182,6 +222,24 @@ class SecureSocket(zmq.Socket):
     def bind(self, addr):
         """wrapper around bind, configuring security"""
         return self._bind_or_connect(addr, bind=True)
+
+    def bind_to_random_port(self, addr, min_port=49152, max_port=65536, max_tries=100):
+        """Bind to a random port in the range [min_port, max_port) and return the port.
+        zmq.Socket.bind_to_random_port lets the OS choose the port when given the default
+        range, and Linux chooses from 32768-60999, which contains ports that
+        applications bind as fixed ports. We always choose the port ourselves."""
+        for _ in range(max_tries):
+            port = random.randrange(min_port, max_port)
+            try:
+                self.bind('%s:%d' % (addr, port))
+            except zmq.ZMQError as e:
+                if e.errno == zmq.EADDRINUSE:
+                    continue
+                if sys.platform == 'win32' and e.errno == errno.EACCES:
+                    continue
+                raise
+            return port
+        raise zmq.ZMQBindError("Could not bind socket to random port.")
 
     def connect(self, addr, timeout=None, interruptor=None):
         """Wrapper around connect, configuring security. If timeout is not None, then
@@ -245,18 +303,14 @@ class SecureSocket(zmq.Socket):
             msg = zmq.Socket.recv(self, flags=flags, copy=False, track=track)
             if self.tcp:
                 try:
-                    peer_ip = msg.get('Peer-Address')
-                    peer_ip = ipaddress.ip_address(peer_ip)
-                    if peer_ip.version == 6 and peer_ip.ipv4_mapped is not None:
-                        peer_ip = peer_ip.ipv4_mapped
-                    self.peer_ip = str(peer_ip)
+                    peer_address = msg.get('Peer-Address')
                 except zmq.error.ZMQError:
                     # Sent by a non-TCP client, even though we are a TCP socket. This is
                     # possible sometimes. For example, XPUB seems to receive unsubscribe
                     # messages via some internal mechanism if a subscriber disconnects.
                     self.peer_ip = None
                 else:
-                    is_loopback = ip_is_loopback(self.peer_ip)
+                    self.peer_ip, is_loopback = _parse_peer_address(peer_address)
                     if not (is_loopback or self.secure or self.allow_insecure):
                         # Unsecured data on external interface and allow_insecure has
                         # not been set. Print a message and ignore it.
@@ -348,6 +402,7 @@ class SecureContext(zmq.Context):
 
     _socket_class = SecureSocket
     _instances = weakref.WeakValueDictionary()
+    _instances_lock = threading.Lock()
     zap_domain = b"zprocess"
 
     # Dummy class attrs to distinguish from zmq options:
@@ -361,6 +416,7 @@ class SecureContext(zmq.Context):
     def __init__(self, io_threads=1, shared_secret=None):
         zmq.Context.__init__(self, io_threads)
         if shared_secret is not None:
+            _check_curve_support()
             keys = _unpack_shared_secret(shared_secret)
             self.client_secretkey, self.server_secretkey = keys
             self.client_publickey = zmq.curve_public(self.client_secretkey)
@@ -384,9 +440,10 @@ class SecureContext(zmq.Context):
         otherwise it will be used in the new instance. Takes into account subclasses
         such that a subclass calling this method will always get back an instance of its
         own class"""
-        try:
-            return cls._instances[cls, shared_secret]
-        except KeyError:
-            instance = cls(io_threads, shared_secret=shared_secret)
-            cls._instances[cls, shared_secret] = instance
-            return instance
+        with cls._instances_lock:
+            try:
+                return cls._instances[cls, shared_secret]
+            except KeyError:
+                instance = cls(io_threads, shared_secret=shared_secret)
+                cls._instances[cls, shared_secret] = instance
+                return instance

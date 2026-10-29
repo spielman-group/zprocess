@@ -182,7 +182,7 @@ class SocksProxyConnection(object):
             self.logger.info(
                 '%s (%s): %s:%d -> %s',
                 event,
-                str(e),
+                e,
                 self.source_host,
                 self.source_port,
                 self.conn_str or '?',

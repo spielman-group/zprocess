@@ -1,5 +1,6 @@
 import sys
 import os
+import signal
 import threading
 import logging
 import logging.handlers
@@ -49,8 +50,8 @@ class Interruptor(object):
         # make a send socket
         self._ctx = zmq.Context.instance()
         self._xpub = self._ctx.socket(zmq.XPUB)
-        # Report every subscription and unsubscription, not only the first and last
-        # for a topic, since subscribe() and unsubscribe() wait for one each:
+        # subscribe() and unsubscribe() wait for their message on this socket, so it must
+        # pass on every subscription and unsubscription, not only the first and last:
         self._xpub.setsockopt(zmq.XPUB_VERBOSER, 1)
         self._endpoint = 'inproc://zpInterruptor' + hexlify(os.urandom(8)).decode()
         self._xpub.bind(self._endpoint)
@@ -112,6 +113,35 @@ class Interruptor(object):
             self.reason = ''
 
 
+def interrupt_main_thread():
+    """Raise KeyboardInterrupt in the main thread, as Ctrl-C does. May be called from
+    any thread. The SIGINT handler must be a Python function that raises the exception,
+    such as signal.default_int_handler, which Python installs at startup unless SIGINT
+    was ignored when the process started; otherwise RuntimeError is raised.
+
+    On POSIX the signal is sent to the main thread with pthread_kill(), so a blocking
+    system call in the main thread, such as time.sleep(), a lock acquisition or a zmq
+    poll, returns at once and the exception is raised. On Windows the signal is raised
+    in the calling thread, which sets the event that time.sleep() and, from Python
+    3.14, lock acquisitions in the main thread wait on; other blocking calls are not
+    woken, and the exception is raised when they return. On every platform, a call
+    into C code that does not check for signals, such as a NumPy operation, is not
+    interrupted, and the exception is raised when it returns."""
+    handler = signal.getsignal(signal.SIGINT)
+    if not callable(handler):
+        msg = (
+            "The SIGINT handler is not a Python function, so KeyboardInterrupt cannot "
+            "be raised in the main thread. Call "
+            "signal.signal(signal.SIGINT, signal.default_int_handler) in the main "
+            "thread first."
+        )
+        raise RuntimeError(msg)
+    if os.name == 'nt':
+        signal.raise_signal(signal.SIGINT)
+    else:
+        signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+
+
 def _reraise(exc_info):
     exctype, value, traceback = exc_info
     raise value.with_traceback(traceback)
@@ -122,40 +152,43 @@ def raise_exception_in_thread(exc_info):
     threading.Thread(target=_reraise, args=(exc_info,)).start()
 
 
+_DAEMON_LAUNCHER = """\
+import subprocess, sys
+subprocess.Popen(sys.argv[1:], stderr=subprocess.DEVNULL, start_new_session=True)
+"""
+
+
 def start_daemon(cmd_args):
-    """calls subprocess.Popen configured to detach the subprocess from the parent, such
-    that it keeps running even if the parent exits. Returns None. Note that the child
-    process will have its current working directory set to the value of
-    tempfile.gettempdir(), rather than remaining in the parent's working directory. In
-    Windows this prevents it holding a lock on the current directory, which would
-    prevent it from being deleted, and the behaviour is the same on unix for
-    consistency."""
-    kwargs = {}
-    if os.name == 'nt':
-        kwargs['creationflags'] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        )
-    else:
-        # Start it from a short-lived Python process, in a new session, so that it is
-        # not our child and has no controlling terminal. Forking here and calling
-        # Popen in the child instead is killed on macOS when a library such as Tcl has
-        # registered fork handlers.
-        launcher = (
-            'import subprocess, sys; '
-            + 'subprocess.Popen(sys.argv[1:], start_new_session=True)'
-        )
-        cmd_args = [sys.executable, '-c', launcher] + list(cmd_args)
-    process = subprocess.Popen(
-        cmd_args,
+    """Start a subprocess that keeps running after the parent exits, and return None.
+    The subprocess has no standard input or output, is in a new process group on
+    Windows and a new session on Unix, and has the working directory
+    tempfile.gettempdir(). On Windows this working directory means that the subprocess
+    does not hold a lock on the parent's working directory. On Unix the subprocess is
+    started by a short-lived intermediate Python process, which this function waits
+    for, so the subprocess is not a child of the caller. Raises
+    subprocess.CalledProcessError if the intermediate process fails."""
+    kwargs = dict(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
         close_fds=True,
         cwd=tempfile.gettempdir(),
-        **kwargs
     )
-    if os.name == 'posix':
-        process.wait()
+    if os.name == 'nt':
+        subprocess.Popen(
+            cmd_args,
+            stderr=subprocess.DEVNULL,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            ),
+            **kwargs
+        )
+    else:
+        subprocess.run(
+            [sys.executable, '-I', '-c', _DAEMON_LAUNCHER] + list(cmd_args),
+            stderr=subprocess.PIPE,
+            check=True,
+            **kwargs
+        )
 
 
 def _get_fileno(stream):
@@ -199,46 +232,54 @@ def disable_quick_edit():
             # Already disabled, nothing for us to do.
             return
         new_mode = (orig_mode | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT
-        console.SetConsoleMode(new_mode)
+        try:
+            console.SetConsoleMode(new_mode)
+        except pywintypes.error:
+            # The console rejects the mode. This happens when the process was relaunched
+            # from a PowerShell prompt: while PSReadLine waits for input it leaves
+            # ENABLE_ECHO_INPUT set without ENABLE_LINE_INPUT, and SetConsoleMode rejects
+            # any mode with that combination.
+            return
         atexit.register(console.SetConsoleMode, orig_mode)
 
         
 def setup_logging(name, silent=False, directory=None):
-    """Basic logging setup used by zprocess servers. silent=True will configure logging
-    calls to be no-ops. directory must be specified for logging to file, otherwise only
-    terminal logging will be produced. Directory will be created if it doesn't exist,
-    but its parent directories must already exist"""
+    """Basic logging setup used by zprocess servers. silent=True sets the logger's level
+    above CRITICAL, so that logging calls return without creating a record. directory
+    must be specified for logging to file, otherwise only terminal logging will be
+    produced. Directory will be created if it doesn't exist, but its parent directories
+    must already exist"""
     LOGLEVEL = logging.DEBUG
+    logger = logging.Logger(name)
+    if silent:
+        logger.setLevel(logging.CRITICAL + 1)
+        return logger
     if directory is not None:
         logpath = os.path.join(directory, '%s.log' % name)
         if not os.path.exists(directory):
             os.mkdir(directory)
     else:
         logpath = None
-    logger = logging.Logger(name)
     logger.setLevel(LOGLEVEL)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
     file_handler_success = False
-    if not silent:
-        if logpath is not None:
-            try:
-                handler = logging.handlers.RotatingFileHandler(
-                    logpath, maxBytes=50 * 1024 ** 2, backupCount=1
-                )
-                handler.setLevel(LOGLEVEL)
-                handler.setFormatter(formatter)
-                logger.addHandler(handler)
-                file_handler_success = True
-            except (OSError, IOError):
-                file_handler_success = False
-        if sys.stdout is not None and sys.stdout.isatty():
-            stream_handler = logging.StreamHandler(sys.stdout)
-            stream_handler.setLevel(LOGLEVEL)
-            stream_handler.setFormatter(formatter)
-            logger.addHandler(stream_handler)
-    if silent:
-        logger.addHandler(logging.NullHandler())
-    if not silent and not file_handler_success and logpath is not None:
+    if logpath is not None:
+        try:
+            handler = logging.handlers.RotatingFileHandler(
+                logpath, maxBytes=50 * 1024 ** 2, backupCount=1
+            )
+            handler.setLevel(LOGLEVEL)
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            file_handler_success = True
+        except (OSError, IOError):
+            file_handler_success = False
+    if sys.stdout is not None and sys.stdout.isatty():
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(LOGLEVEL)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+    if not file_handler_success and logpath is not None:
         msg = 'Can\'t open or do not have permission to write to log file '
         msg += logpath + '. Only terminal logging will be output.'
         logger.warning(msg)
@@ -281,6 +322,12 @@ def server_argument_parser(name, default_port):
         help="""Directory for the (optional) log file of the %s.""" % name,
     )
 
+    parser.add_argument(
+        '--silent',
+        action='store_true',
+        help="""Do not log anything, to the terminal or to a file.""",
+    )
+
     exclusive_grp = parser.add_mutually_exclusive_group()
 
     exclusive_grp.add_argument(
@@ -288,11 +335,10 @@ def server_argument_parser(name, default_port):
         '--allow-insecure',
         action='store_true',
         dest='allow_insecure',
-        default=True,
+        default=False,
         help="""Must be set to acknowledge that communication will be insecure if not
         using a shared secret, otherwise connections to hosts other than localhost will
-        raise an exception. Is by default set on zprocess 2 for backward compatibility,
-        but will be unset by default in zprocess 3.""",
+        raise an exception.""",
     )
 
     exclusive_grp.add_argument(
@@ -300,9 +346,7 @@ def server_argument_parser(name, default_port):
         '--no-allow-insecure',
         action='store_false',
         dest='allow_insecure',
-        help="""Set to explicitly disallow insecure connections. This will be
-        unnecessary on zprocess 3.0, when requiring secure connections will be the
-        default behaviour.""",
+        help="""Disallow insecure connections. This is the default.""",
     )
     return parser
 
@@ -320,6 +364,7 @@ def server_kwargs(args):
         shared_secret=shared_secret,
         allow_insecure=args.allow_insecure,
         server_log_dir=args.server_log_dir,
+        silent=args.silent,
     )
 
 
@@ -340,17 +385,96 @@ def gethostbyname(host, prefer_ipv4=True, require_ipv4=False):
     return sockaddr[0]
 
 
+if sys.platform == 'win32':
+    import ctypes
+    from ctypes import wintypes
+
+    # From mstcpip.h
+    SIO_TCP_INITIAL_RTO = 0x98000011
+    TCP_INITIAL_RTO_UNSPECIFIED_RTT = 0xFFFF
+    TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS = 0xFE
+
+    class TCP_INITIAL_RTO_PARAMETERS(ctypes.Structure):
+        _fields_ = [('Rtt', wintypes.USHORT), ('MaxSynRetransmissions', ctypes.c_ubyte)]
+
+    _ws2_32 = ctypes.WinDLL('ws2_32', use_last_error=True)
+    _WSAIoctl = _ws2_32.WSAIoctl
+    _WSAIoctl.argtypes = [
+        ctypes.c_size_t,  # SOCKET
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    _WSAIoctl.restype = ctypes.c_int
+
+    def _disable_syn_retransmissions(sock):
+        """Make a connection attempt on the socket fail as soon as it is refused. By
+        default Windows retransmits the SYN after a refusal, so that a connection to a
+        port with no listener fails only after about a second."""
+        params = TCP_INITIAL_RTO_PARAMETERS(
+            TCP_INITIAL_RTO_UNSPECIFIED_RTT, TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS
+        )
+        returned = wintypes.DWORD()
+        result = _WSAIoctl(
+            sock.fileno(),
+            SIO_TCP_INITIAL_RTO,
+            ctypes.byref(params),
+            ctypes.sizeof(params),
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
+            None,
+        )
+        if result != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+def port_in_use(port, timeout=1):
+    """Return whether a process on this computer is listening on the TCP port. We
+    attempt a connection to the port on 127.0.0.1 and close it without sending anything,
+    so a ZMQServer on the port receives no message.
+
+    On Windows the connection attempt has no timeout, because a socket timeout adds
+    about 15 ms. With SYN retransmissions disabled, Windows completes or refuses a
+    connection to 127.0.0.1 at once, including when the listener's backlog is full, in
+    which case this returns False. On other platforms, a connection attempt that times
+    out after `timeout` seconds means that the listener's backlog is full, and this
+    returns True."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if sys.platform == 'win32':
+            _disable_syn_retransmissions(sock)
+        else:
+            sock.settimeout(timeout)
+        try:
+            sock.connect(('127.0.0.1', port))
+        except ConnectionRefusedError:
+            return False
+        except socket.timeout:
+            return True
+        return True
+
+
 def get_venv_executable_and_env(env=None):
-    """If we are running in a venv on Windows or MacOS such that sys.executable is a
-    shim to sys._base_executable, then return sys._base_executable, as well as the
-    environment that should be passed to sys._base_executable in order for it to know to
-    configure itself for the virtual environment instead of the base environment. This
-    allows us to skip the shim and thus have fewer layers in our process hierarchy. If
-    we are not in a venv, return sys.executable and the env as passed in. If env passed
-    in is None, and needs to be modified for the subprocess, a copy of os.environ(),
-    appropriately modified, will be returned."""
+    """Return the executable with which to start a Python subprocess, and the
+    environment to pass to it. On Windows in a venv, sys.executable is a launcher that
+    runs sys._base_executable as a child process; to skip that extra process, return
+    sys._base_executable and an environment with __PYVENV_LAUNCHER__ set, which tells
+    it to configure itself for the venv, as the launcher would. Otherwise return
+    sys.executable and env as passed in. If env is None and needs to be modified for the
+    subprocess, a copy of os.environ, appropriately modified, is returned.
+
+    On macOS the venv's python is either a symlink to the framework's bin/python3.x
+    stub or a copy of it, and the stub execs the interpreter with __PYVENV_LAUNCHER__
+    set to its own path, so there is no extra process to skip and running
+    sys._base_executable would give a subprocess that does not see the venv."""
     base_executable = getattr(sys, '_base_executable', sys.executable)
-    if Path(base_executable) != Path(sys.executable):
+    if os.name == 'nt' and Path(base_executable) != Path(sys.executable):
         if env is None:
             env = os.environ.copy()
         env["__PYVENV_LAUNCHER__"] = str(sys.executable)
