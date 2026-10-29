@@ -1572,8 +1572,9 @@ class ProcessTree(object):
                 'heartbeat_interval',
                 HeartbeatClient.HEARTBEAT_INTERVAL,
             ),
-            # Parents older than allowed_missed_heartbeats do not send it. Keep their
-            # single-miss behaviour:
+            # TODO: remove legacy code in the future (introduced 2026)
+            # Older parents will not include this field, so preserve the legacy
+            # single-miss behavior when connecting to them.
             allowed_missed_heartbeats=parentinfo.get('allowed_missed_heartbeats', 1),
         )
 
