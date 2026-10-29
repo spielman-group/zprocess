@@ -22,25 +22,49 @@ With it come, by Ian's decision:
 - `port_in_use()`, random ports in 49152-65535, and child sockets that do not
   reconnect to an exited parent's ports.
 
-## Fork changes upstream lacks
+## Differences from upstream v3.0.1
 
+The fork stays as close to upstream as it can (Ian). Every difference in
+`git diff upstream/master CodeHealth` is one of these:
+
+**Fix upstream lacks:**
 - `ZMQServer` sends its reply inside the request's `try`, so a reply that cannot
   be pickled reaches the client as an error, and it catches `BaseException`, so a
   handler's `SystemExit` does too.
 - `WriteQueue.put()` to a local child that has exited raises `ProcessExited`.
-- zlock rejects a NaN timeout, acquires a reentrant lock outside the `assert`,
-  and zlog logs rollovers with its own logger.
+- zlock rejects a NaN timeout and acquires a reentrant lock outside the `assert`;
+  zlog logs rollovers with its own logger.
+- `curses_server.LogLines` honours `maxlines`.
+- Text that is wrong upstream: the README's and docs' install lines, BitBucket
+  link, Python 2.7 note and TODO placeholders; `_get_fileno`'s docstring;
+  `OutputInterceptor`'s docstring, which sits after code and so is not one;
+  `ProcessTree.subprocess`'s unfinished docstring; an orphaned "Disabled for
+  now" comment in `security.py`; `tasks.py`'s module names.
+- The code fixes but `maxlines` are on `UpstreamBugFixes`, for a pull request;
+  `maxlines` and the text go with the "simplify" one.
+
+**Fork design upstream lacks (Ian, step 2.2):**
 - `ZMQRouterServer` in `zprocess.clientserver` holds the zlock and zlog servers'
-  ROUTER loop. `server_argument_parser()` and `server_kwargs()` in
-  `zprocess.utils` hold the three servers' command-line arguments, `--silent`
-  included. labscript-utils starts zlock and zlog as subprocesses, so their
-  command lines stay as they are.
-- `ZLockClient` and `ZLogClient` stay separate: one is a REQ client with a legacy
-  reply for old servers, the other a DEALER.
-- Removed: `zprocess.locking`, `utils.embed`, `run_tests.py`,
-  `socks.server.RouteNotAllowed`, `SecureSocket.send`, and the demo
-  `if __name__ == '__main__'` blocks in library modules. `curses_server.LogLines`
-  honours `maxlines`.
+  ROUTER loop, and `test_zlock_server.py` patches it there.
+- `server_argument_parser()` and `server_kwargs()` in `zprocess.utils` hold the
+  three servers' command-line arguments, with upstream's secure default and
+  `--silent`. labscript-utils starts zlock and zlog as subprocesses, so their
+  command lines stay as they are. Taking upstream's form is possible: three
+  copies of the arguments again.
+
+**Removal upstream lacks (Ian, step 2.4):**
+- `zprocess.locking`, which upstream keeps, deprecated, until zprocess 4; nothing
+  in the suite imports it. Taking upstream's form is possible: 22 lines back.
+- `run_tests.py` and `xmlrunner`, `socks.server.RouteNotAllowed`,
+  `SecureSocket.send`, and the demo `if __name__ == '__main__'` blocks in
+  library modules.
+
+**Ian's decision:** Python 3.13 or newer.
+
+Logging calls pass their arguments lazily, as upstream's do.
+
+`ZLockClient` and `ZLogClient` stay separate: one is a REQ client with a legacy
+reply for old servers, the other a DEALER.
 
 ## Public interface kept
 
