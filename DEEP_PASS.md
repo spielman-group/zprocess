@@ -58,6 +58,11 @@ blocks are kept as upstream has them.
 
 Logging calls pass their arguments lazily, as upstream's do.
 
+The fork adds no compatibility artifact of its own. `ERR_INVALID_COMMAND`, now
+defined with `ZMQRouterServer`, is still imported into `zlock.server` and
+`zlog.server`, where upstream defines it beside their other `ERR_*` constants
+and its tests import it.
+
 `ZLockClient` and `ZLogClient` stay separate: one is a REQ client with a legacy
 reply for old servers, the other a DEALER.
 
