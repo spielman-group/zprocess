@@ -1,3 +1,6 @@
+# Common to all platforms:
+xmlrunner
+
 # On Windows, do not auto-install pyzmq. Setup.py will check for it, and throw an error
 # if the user does not have it. This is because conda zmq must be used, and we do not
 # want pip to install pyzmq from pip, as it is not compiled with libsodium and so has

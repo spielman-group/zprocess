@@ -237,3 +237,13 @@ class ZMQLogServer(ZMQRouterServer):
             self.done(routing_id, ip, args)
         else:
             ZMQRouterServer.handle(self, routing_id, ip, command, args)
+
+
+if __name__ == '__main__':
+    port = 7340
+    server = ZMQLogServer(
+        port,
+        handler_class=RotatingFileHandler,
+        handler_kwargs={'maxBytes': 256, 'backupCount': 3},
+    )
+    server.run()

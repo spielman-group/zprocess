@@ -298,6 +298,9 @@ class SecureSocket(zmq.Socket):
                 self.disable_monitor()
                 monitor.close()
 
+    def send(self, *args, **kwargs):
+        return zmq.Socket.send(self, *args, **kwargs)
+
     def recv(self, flags=0, copy=True, track=False):
         while True:
             msg = zmq.Socket.recv(self, flags=flags, copy=False, track=track)

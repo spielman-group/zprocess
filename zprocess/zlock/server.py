@@ -464,3 +464,9 @@ class ZMQLockServer(ZMQRouterServer):
         key, client_id = args
         request = LockRequest.instance(key, client_id, self)
         request.release_request(routing_id, ip)
+
+
+if __name__ == '__main__':
+    port = 7339
+    server = ZMQLockServer(port)
+    server.run()

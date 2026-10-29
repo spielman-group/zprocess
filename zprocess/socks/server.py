@@ -7,6 +7,7 @@ from weakref import WeakSet
 import errno
 
 import ipaddress
+import zmq
 
 
 from zprocess.socks import (
@@ -44,6 +45,10 @@ def ordinal(n):
     return str(n) + suffixes.get(n % 10 * (n % 100 not in [11, 12, 13]), "th")
 
 class ConnectionEnded(RuntimeError):
+    pass
+
+
+class RouteNotAllowed(ValueError):
     pass
 
 
@@ -465,3 +470,52 @@ class SocksProxyServer(object):
         self.started.clear()
         self.listener = None
         self.shutting_down = False
+
+
+if __name__ == '__main__':
+    # Testing. Pipe a secure zmq connection through three hops and say hello.
+    from zprocess.security import SecureContext, generate_shared_secret
+
+    socks_proxy1 = SocksProxyServer(9001)
+    socks_proxy2 = SocksProxyServer(9002)
+    socks_proxy3 = SocksProxyServer(9003)
+
+    socks_proxy1.start()
+    socks_proxy2.start()
+    socks_proxy3.start()
+
+    rule_1 = AllowRule('127.0.0.1', '*', '127.0.0.1', '*')
+    rule_2 = AllowRule('127.0.0.1', '*', '::1', '*')
+    for proxy in [socks_proxy1, socks_proxy2, socks_proxy3]:
+        proxy.rules.add(rule_1)
+        proxy.rules.add(rule_2)
+
+    context = SecureContext(shared_secret=generate_shared_secret())
+    zmq_server = context.socket(zmq.REP)
+    zmq_client = context.socket(zmq.REQ)
+
+    zmq_client.IPV6 = 1
+    zmq_server.IPV6 = 1
+
+    zmq_server.bind('tcp://::1:9000')
+
+    print('about to connect...')
+    zmq_client.connect('tcp://127.0.0.1:9001|127.0.0.1:9002|127.0.0.1:9003|[::1]:9000')
+
+    print('about to send...')
+    zmq_client.send(b'hello')
+
+    print('about to recv...')
+    print(zmq_server.recv())
+
+    print('********closing server 2********')
+    socks_proxy2.shutdown()
+
+    print('********closing server 1********')
+    socks_proxy1.shutdown()
+
+    print('********closing server 3********')
+    socks_proxy3.shutdown()
+
+    # Should only be one thread left after everything is shut down:
+    print("num threads:", threading.active_count())
