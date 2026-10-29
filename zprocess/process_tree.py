@@ -189,11 +189,6 @@ class HeartbeatServer(object):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REP)
         self.port = self.sock.bind_to_random_port(bind_address)
-        if sys.platform == 'darwin':
-            # App Nap delays the replies of an idle GUI process, and its subprocesses
-            # would take it for dead:
-            import appnope
-            appnope.nope()
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
