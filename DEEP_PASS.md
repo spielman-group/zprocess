@@ -50,6 +50,11 @@ upstream from `UpstreamBugFixes`:
   `--silent`. labscript-utils starts zlock and zlog as subprocesses, so their
   command lines stay as they are.
 
+**Addition upstream lacks (Ian):** `HeartbeatClient.on_parent_death`. If set to a
+function, heartbeat failure calls it in its own thread and gives the process
+`PARENT_DEATH_TIMEOUT` seconds (10) to exit by itself before ending it as before.
+blacs's worker uses it to start its quit path.
+
 **Ian's decision:** Python 3.13 or newer; the docs say so.
 
 Upstream's `zprocess.locking` (deprecated until zprocess 4), `run_tests.py`,
